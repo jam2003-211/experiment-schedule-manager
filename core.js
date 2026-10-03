@@ -94,12 +94,12 @@
       assignedWorkerId: input.assignedWorkerId || existing?.assignedWorkerId || "worker_default",
       workLocation: input.workLocation || existing?.workLocation || "lab",
       interruptible: input.interruptible !== false,
-      manualStartAt: input.manualStartAt || existing?.manualStartAt || null,
+      manualStartAt: input.manualStartAt || existing?.manualStartAt || null, plannedStartAt: existing?.plannedStartAt || null, plannedEndAt: existing?.plannedEndAt || null,
       equipmentRequirements: (input.equipmentRequirements || []).map((item) => {
         const occupancy = finiteNumber(item.occupancyMinutes);
         return { equipmentId: normalizeText(item.equipmentId), equipmentName: normalizeText(item.equipmentName), occupancyMinutes: occupancy, occupancyStartOffsetMinutes: finiteNumber(item.occupancyStartOffsetMinutes || 0), occupancyEndOffsetMinutes: finiteNumber(item.occupancyEndOffsetMinutes ?? occupancy), requiresContinuousMonitoring: !!item.requiresContinuousMonitoring };
       }),
-      notes: normalizeText(input.notes), createdAt: existing?.createdAt || now, updatedAt: now,
+      notes: normalizeText(input.notes), displayOrder: Number.isInteger(existing?.displayOrder) ? existing.displayOrder : null, createdAt: existing?.createdAt || now, updatedAt: now,
       actualWorkMinutes: existing?.actualWorkMinutes ?? null, actualStartedAt: existing?.actualStartedAt ?? null, actualEndedAt: existing?.actualEndedAt ?? null, actualSegments: existing?.actualSegments || [], remainingWorkMinutes: existing?.remainingWorkMinutes ?? finiteNumber(input.workDurationMinutes), progressUpdatedAt: existing?.progressUpdatedAt || null, status: existing?.status || "未着手"
     };
   }
@@ -122,6 +122,21 @@
     return { valid: errors.length === 0, errors: [...new Set(errors)] };
   }
 
+  function orderedOwnerSteps(steps, ownerType, ownerId) {
+    const owned = (steps || []).map((step, sourceIndex) => ({ step, sourceIndex })).filter((item) => item.step.ownerType === ownerType && item.step.ownerId === ownerId);
+    if (!owned.every((item) => Number.isInteger(item.step.displayOrder))) return owned.map((item) => item.step);
+    return owned.sort((a, b) => a.step.displayOrder - b.step.displayOrder || a.sourceIndex - b.sourceIndex).map((item) => item.step);
+  }
+
+  function movePlanStepDisplayOrder(steps, planId, stepId, offset) {
+    const ordered = orderedOwnerSteps(steps, "plan", planId), currentIndex = ordered.findIndex((step) => step.id === stepId), targetIndex = currentIndex + Number(offset);
+    if (currentIndex < 0) return { moved: false, error: "並べ替える工程が見つかりません。", orderedStepIds: ordered.map((step) => step.id) };
+    if (!Number.isInteger(Number(offset)) || ![-1, 1].includes(Number(offset)) || targetIndex < 0 || targetIndex >= ordered.length) return { moved: false, error: "これ以上移動できません。", orderedStepIds: ordered.map((step) => step.id) };
+    [ordered[currentIndex], ordered[targetIndex]] = [ordered[targetIndex], ordered[currentIndex]];
+    ordered.forEach((step, index) => { step.displayOrder = index; });
+    return { moved: true, error: null, orderedStepIds: ordered.map((step) => step.id) };
+  }
+
   function createPlanFromTemplate(data, templateId, experimentIdeaId) {
     const template = data.templates.find((item) => item.id === templateId), idea = data.experimentIdeas.find((item) => item.id === experimentIdeaId);
     if (!template || !idea) throw new Error("テンプレートまたは実験が見つかりません。");
@@ -131,7 +146,7 @@
     const targetCompletionDate = idea.desiredCompletionDate || "";
     const plan = { id: makeId("plan"), experimentIdeaId, sourceTemplateId: templateId, name: `${idea.name} — ${template.name}`, targetCompletionDate, targetCompletionDateTime: targetCompletionDate ? zonedLocalToIso(`${targetCompletionDate}T18:00`, data.availability?.timeZone || "Asia/Tokyo") : "", activeScheduleVersionId: null, status: "下書き", createdAt: now, updatedAt: now };
     const idMap = new Map(sourceSteps.map((step) => [step.id, makeId("step")]));
-    const steps = sourceSteps.map((step) => ({ ...JSON.parse(JSON.stringify(step)), id: idMap.get(step.id), ownerType: "plan", ownerId: plan.id, sourceTemplateStepId: step.id, predecessorIds: (step.predecessorIds || []).map((id) => idMap.get(id)), createdAt: now, updatedAt: now, actualWorkMinutes: null, actualStartedAt: null, actualEndedAt: null, status: "未着手" }));
+    const steps = sourceSteps.map((step, index) => ({ ...JSON.parse(JSON.stringify(step)), id: idMap.get(step.id), ownerType: "plan", ownerId: plan.id, sourceTemplateStepId: step.id, displayOrder: index, predecessorIds: (step.predecessorIds || []).map((id) => idMap.get(id)), createdAt: now, updatedAt: now, actualWorkMinutes: null, actualStartedAt: null, actualEndedAt: null, status: "未着手" }));
     return { plan, steps };
   }
 
@@ -373,12 +388,14 @@
         if (!workerIds.has(step.assignedWorkerId)) errors.push(`工程 ${index + 1}: 担当作業者が見つかりません。`);
         if (step.labRequirement?.waitCheck && !workerIds.has(step.waitCheckWorkerId)) errors.push(`工程 ${index + 1}: 確認担当者が見つかりません。`);
         if (!Array.isArray(step.predecessorIds)) errors.push(`工程 ${index + 1}: 先行工程IDは配列である必要があります。`);
+        if (step.displayOrder !== undefined && step.displayOrder !== null && (!Number.isInteger(step.displayOrder) || step.displayOrder < 0)) errors.push(`工程 ${index + 1}: 表示順は0以上の整数である必要があります。`);
         if (!Array.isArray(step.equipmentRequirements)) errors.push(`工程 ${index + 1}: 使用装置は配列である必要があります。`); else step.equipmentRequirements.forEach((requirement) => { if (!equipmentIds.has(requirement.equipmentId)) errors.push(`工程 ${index + 1}: 使用装置「${requirement.equipmentId || "未設定"}」が見つかりません。`); });
         for (const [label, value] of [["手動開始日時", step.manualStartAt], ["実績開始日時", step.actualStartedAt], ["実績終了日時", step.actualEndedAt], ["進捗更新日時", step.progressUpdatedAt], ["予定開始日時", step.plannedStartAt], ["予定終了日時", step.plannedEndAt]]) if (!optionalIso(value)) errors.push(`工程 ${index + 1}: ${label}が正しくありません。`);
         if (step.actualStartedAt && step.actualEndedAt && new Date(step.actualEndedAt) < new Date(step.actualStartedAt)) errors.push(`工程 ${index + 1}: 実績終了日時が開始日時より前です。`);
         const key = `${step.ownerType}:${step.ownerId}`; if (!ownerGroups.has(key)) ownerGroups.set(key, []); ownerGroups.get(key).push(step);
       });
       ownerGroups.forEach((steps) => {
+        const displayOrders = new Set(); steps.forEach((step) => { if (Number.isInteger(step.displayOrder)) { if (displayOrders.has(step.displayOrder)) errors.push(`工程「${step.name || step.id}」: 表示順が重複しています。`); displayOrders.add(step.displayOrder); } });
         steps.forEach((step) => { const result = validateStep(step, steps.filter((item) => item.id !== step.id), step.id); Object.values(result.errors).forEach((message) => errors.push(`工程「${step.name || step.id}」: ${message}`)); });
         errors.push(...validateDependencyGraph(steps).errors);
       });
@@ -397,5 +414,5 @@
     return validation.valid ? { valid: true, data: migration.data, migrated: migration.migrated, errors: [] } : { valid: false, errors: validation.errors };
   }
 
-  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, validateIdea, sanitizeIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, validateDependencyGraph, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, migrateData, validateData, hydrateData, serializeData, parseBackup };
+  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, validateIdea, sanitizeIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, validateDependencyGraph, orderedOwnerSteps, movePlanStepDisplayOrder, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, migrateData, validateData, hydrateData, serializeData, parseBackup };
 });

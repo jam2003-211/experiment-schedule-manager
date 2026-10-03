@@ -486,6 +486,60 @@ try {
 '@
   Add-Result 'Progress impact preview' ($progressImpact.visible -and $progressImpact.text.Length -gt 0) 'Displayed affected successor steps before saving progress changes'
 
+  $orderMove = Invoke-Js @'
+(() => {
+  document.querySelector('[data-view="plans"]').click();
+  const before=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY));
+  const plan=before.plans.find(item=>ExperimentCore.orderedOwnerSteps(before.steps,'plan',item.id).length>=2);
+  const orderedBefore=ExperimentCore.orderedOwnerSteps(before.steps,'plan',plan.id),movedId=orderedBefore[0].id;
+  const expectedIds=[orderedBefore[1].id,orderedBefore[0].id,...orderedBefore.slice(2).map(item=>item.id)];
+  const dependencySnapshot=items=>JSON.stringify(items.map(item=>({id:item.id,predecessorIds:[...item.predecessorIds].sort()})).sort((a,b)=>a.id.localeCompare(b.id)));
+  const dependencies=dependencySnapshot(orderedBefore);
+  const templateState=JSON.stringify(before.steps.filter(item=>item.ownerType==='template'));
+  const confirmed=plan.confirmedOptimizationResultId||null,stale=!!plan.scheduleNeedsRecalculation;
+  const card=document.querySelector(`[data-owner-type="plan"][data-owner-id="${plan.id}"]`),button=card.querySelector(`[data-step-id="${movedId}"] [data-action="move-step-down"]`);
+  const buttons=card.querySelectorAll('[data-action="move-step-up"],[data-action="move-step-down"]').length,note=card.querySelector('.display-order-note')?.textContent||'';
+  button.click();
+  const after=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),afterPlan=after.plans.find(item=>item.id===plan.id);
+  const orderedAfter=ExperimentCore.orderedOwnerSteps(after.steps,'plan',plan.id),domIds=[...document.querySelectorAll(`[data-owner-type="plan"][data-owner-id="${plan.id}"] [data-step-id]`)].map(row=>row.dataset.stepId);
+  const afterIds=orderedAfter.map(item=>item.id),expectedKey=expectedIds.join(','),afterKey=afterIds.join(','),domKey=domIds.join(',');
+  const dependenciesAfter=dependencySnapshot(orderedAfter);
+  const templateAfter=JSON.stringify(after.steps.filter(item=>item.ownerType==='template'));
+  return {
+    planId:plan.id,movedId,expectedIds,afterIds,domIds,expectedKey,afterKey,domKey,buttons,note,
+    controlsValid:buttons>=4,
+    noteValid:note.includes('\u8868\u793a\u9806\u3060\u3051'),
+    orderChanged:afterKey===expectedKey&&domKey===expectedKey,
+    dependenciesUnchanged:dependencies===dependenciesAfter,
+    graphValid:ExperimentCore.validateDependencyGraph(orderedAfter).valid,
+    templateUnchanged:templateState===templateAfter,
+    confirmedUnchanged:confirmed===(afterPlan.confirmedOptimizationResultId||null),
+    staleUnchanged:stale===!!afterPlan.scheduleNeedsRecalculation
+  };
+})()
+'@
+  $orderDetail = "buttons=$($orderMove.buttons) note=$($orderMove.note) expected=$($orderMove.expectedIds -join ',') saved=$($orderMove.afterIds -join ',') dom=$($orderMove.domIds -join ',')"
+  Add-Result 'Plan step display reorder controls' ($orderMove.controlsValid -and $orderMove.noteValid -and $orderMove.orderChanged) $orderDetail
+  Add-Result 'Display order and dependency separation' ($orderMove.dependenciesUnchanged -and $orderMove.graphValid -and $orderMove.confirmedUnchanged -and $orderMove.staleUnchanged) 'Changed only displayOrder without changing dependencies, confirmed schedule, or recalculation state'
+  Add-Result 'Reorder template independence' ($orderMove.templateUnchanged) 'Kept source template steps byte-for-byte unchanged'
+
+  [void](Invoke-Cdp 'Page.reload' @{ ignoreCache = $true })
+  if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Step order reload timed out.' }
+  $orderPlanId = $orderMove.planId
+  $orderExpectedKey = $orderMove.expectedKey
+  $orderPersistence = Invoke-Js @"
+(() => {
+  document.querySelector('[data-view="plans"]').click();
+  const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY));
+  const ordered=ExperimentCore.orderedOwnerSteps(d.steps,'plan','$orderPlanId');
+  const ids=ordered.map(x=>x.id);
+  const domIds=[...document.querySelectorAll('[data-owner-type="plan"][data-owner-id="$orderPlanId"] [data-step-id]')].map(x=>x.dataset.stepId);
+  const expected='$orderExpectedKey';
+  return {ids,domIds,orders:ordered.map(x=>x.displayOrder),persisted:ids.join(',')===expected&&domIds.join(',')===expected};
+})()
+"@
+  Add-Result 'Display order reload persistence' ($orderPersistence.persisted -and $orderPersistence.orders.Count -ge 2) 'Retained saved displayOrder values and rendered order after page reload'
+
   $results | Format-Table -AutoSize | Out-String -Width 240 | Write-Output
   Write-Output "ALL_TESTS_PASSED=$($results.Count)"
 }

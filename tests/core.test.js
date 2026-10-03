@@ -61,3 +61,32 @@ test("計算時の作業可能時間をスナップショット保存する", ()
   data.availability.profiles[0].weekly[1].enabled = false;
   assert.equal(result.availabilitySnapshot.profiles[0].weekly[1].enabled, true);
 });
+
+test("個別計画の表示順だけを上下移動して保存できる", () => {
+  const steps = [step("a", 30), step("b", 30, 0, "calendar", ["a"]), step("c", 30, 0, "calendar", ["b"])];
+  const dependencies = JSON.stringify(steps.map((item) => item.predecessorIds));
+  const result = core.movePlanStepDisplayOrder(steps, "p", "a", 1);
+  assert.equal(result.moved, true);
+  assert.deepEqual(core.orderedOwnerSteps(steps, "plan", "p").map((item) => item.id), ["b", "a", "c"]);
+  assert.equal(JSON.stringify(steps.map((item) => item.predecessorIds)), dependencies);
+  const reloaded = JSON.parse(JSON.stringify(steps));
+  assert.deepEqual(core.orderedOwnerSteps(reloaded, "plan", "p").map((item) => item.id), ["b", "a", "c"]);
+  assert.equal(core.validateDependencyGraph(reloaded).valid, true);
+});
+
+test("個別計画の並べ替えはテンプレート工程に影響しない", () => {
+  const templateSteps = [
+    { ...step("ta", 30), ownerType: "template", ownerId: "t" },
+    { ...step("tb", 30, 0, "calendar", ["ta"]), ownerType: "template", ownerId: "t" }
+  ];
+  const planSteps = [step("pa", 30), step("pb", 30, 0, "calendar", ["pa"])];
+  const allSteps = [...templateSteps, ...planSteps], before = JSON.stringify(templateSteps);
+  core.movePlanStepDisplayOrder(allSteps, "p", "pa", 1);
+  assert.equal(JSON.stringify(templateSteps), before);
+  assert.deepEqual(core.orderedOwnerSteps(allSteps, "template", "t").map((item) => item.id), ["ta", "tb"]);
+});
+
+test("旧データと表示順付き工程が混在しても元の配列順を維持する", () => {
+  const steps = [step("legacy-a", 30), step("legacy-b", 30), { ...step("new-c", 30), displayOrder: 2 }];
+  assert.deepEqual(core.orderedOwnerSteps(steps, "plan", "p").map((item) => item.id), ["legacy-a", "legacy-b", "new-c"]);
+});
