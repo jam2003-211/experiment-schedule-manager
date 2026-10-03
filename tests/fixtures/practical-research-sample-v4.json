@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 4,
+  "updatedAt": "2031-05-30T00:00:00.000Z",
+  "experimentIdeas": [
+    { "id": "idea_cell", "name": "薬剤応答細胞培養", "purpose": "培養細胞の薬剤応答を画像評価する", "materials": "培養細胞、培地、薬剤", "plannedEquipment": "インキュベーター、顕微鏡", "priority": "高", "desiredCompletionDate": "2031-06-05", "notes": "実用化検証専用の架空データ", "status": "計画中", "createdAt": "2031-05-30T00:00:00.000Z", "updatedAt": "2031-05-30T00:00:00.000Z" },
+    { "id": "idea_qpcr", "name": "遺伝子発現qPCR", "purpose": "RNA抽出からqPCR測定までを行う", "materials": "細胞ペレット、抽出試薬、PCR試薬", "plannedEquipment": "遠心機、サーマルサイクラー、qPCR装置", "priority": "高", "desiredCompletionDate": "2031-06-06", "notes": "実用化検証専用の架空データ", "status": "計画中", "createdAt": "2031-05-30T00:00:00.000Z", "updatedAt": "2031-05-30T00:00:00.000Z" },
+    { "id": "idea_protein", "name": "タンパク質試料調製", "purpose": "複数試料をまとめて破砕・精製する", "materials": "組織試料、溶解液、精製カラム", "plannedEquipment": "ホモジナイザー、遠心機、クロマトグラフィー装置", "priority": "中", "desiredCompletionDate": "2031-06-09", "notes": "実用化検証専用の架空データ", "status": "計画中", "createdAt": "2031-05-30T00:00:00.000Z", "updatedAt": "2031-05-30T00:00:00.000Z" }
+  ],
+  "templates": [],
+  "plans": [
+    { "id": "plan_cell", "name": "薬剤応答細胞培養 6月", "experimentIdeaId": "idea_cell", "sourceTemplateId": null, "targetCompletionDateTime": "2031-06-05T09:00:00.000Z", "activeScheduleVersionId": null },
+    { "id": "plan_qpcr", "name": "遺伝子発現qPCR 6月", "experimentIdeaId": "idea_qpcr", "sourceTemplateId": null, "targetCompletionDateTime": "2031-06-06T09:00:00.000Z", "activeScheduleVersionId": null },
+    { "id": "plan_protein", "name": "タンパク質試料調製 6月", "experimentIdeaId": "idea_protein", "sourceTemplateId": null, "targetCompletionDateTime": "2031-06-09T08:00:00.000Z", "activeScheduleVersionId": null }
+  ],
+  "steps": [
+    { "id": "cell_seed", "ownerType": "plan", "ownerId": "plan_cell", "name": "細胞播種・薬剤処理", "workDurationMinutes": 360, "waitDurationMinutes": 0, "waitDurationType": "calendar", "predecessorIds": [], "labRequirement": { "start": true, "end": true, "waitCheck": false }, "waitCheckIntervalMinutes": 0, "waitCheckDurationMinutes": 0, "waitCheckWorkerId": "worker_alice", "waitCheckRequiresLab": false, "assignedWorkerId": "worker_alice", "workLocation": "lab", "interruptible": false, "manualStartAt": null, "equipmentRequirements": [{ "equipmentId": "eq_bsc", "equipmentName": "安全キャビネット", "occupancyMinutes": 360, "occupancyStartOffsetMinutes": 0, "occupancyEndOffsetMinutes": 360, "requiresContinuousMonitoring": true }], "notes": "6時間連続のバッチ処理", "status": "未着手", "remainingWorkMinutes": 360, "actualStartedAt": null, "actualEndedAt": null, "actualSegments": [] },
+    { "id": "cell_incubate", "ownerType": "plan", "ownerId": "plan_cell", "name": "薬剤反応培養", "workDurationMinutes": 0, "waitDurationMinutes": 2520, "waitDurationType": "calendar", "predecessorIds": ["cell_seed"], "labRequirement": { "start": false, "end": false, "waitCheck": false }, "waitCheckIntervalMinutes": 0, "waitCheckDurationMinutes": 0, "waitCheckWorkerId": "worker_alice", "waitCheckRequiresLab": false, "assignedWorkerId": "worker_alice", "workLocation": "lab", "interruptible": true, "manualStartAt": null, "equipmentRequirements": [{ "equipmentId": "eq_incubator", "equipmentName": "CO2インキュベーター", "occupancyMinutes": 2520, "occupancyStartOffsetMinutes": 0, "occupancyEndOffsetMinutes": 2520, "requiresContinuousMonitoring": false }], "notes": "休日・夜間も進む42時間培養", "status": "未着手", "remainingWorkMinutes": 0, "actualStartedAt": null, "actualEndedAt": null, "actualSegments": [] },
+    { "id": "cell_image", "ownerType": "plan", "ownerId": "plan_cell", "name": "画像取得", "workDurationMinutes": 60, "waitDurationMinutes": 0, "waitDurationType": "calendar", "predecessorIds": ["cell_incubate"], "labRequirement": { "start": true, "end": true, "waitCheck": false }, "waitCheckIntervalMinutes": 0, "waitCheckDurationMinutes": 0, "waitCheckWorkerId": "worker_alice", "waitCheckRequiresLab": false, "assignedWorkerId": "worker_alice", "workLocation": "lab", "interruptible": false, "manualStartAt": null, "equipmentRequirements": [{ "equipmentId": "eq_microscope", "equipmentName": "蛍光顕微鏡", "occupancyMinutes": 60, "occupancyStartOffsetMinutes": 0, "occupancyEndOffsetMinutes": 60, "requiresContinuousMonitoring": true }], "notes": "", "status": "未着手", "remainingWorkMinutes": 60, "actualStartedAt": null, "actualEndedAt": null, "actualSegments": [] },
+
+    { "id": "qpcr_extract", "ownerType": "plan", "ownerId": "plan_qpcr", "name": "RNA抽出", "workDurationMinutes": 120, "waitDurationMinutes": 0, "waitDurationType": "calendar", "predecessorIds": [], "labRequirement": { "start": true, "end": true, "waitCheck": false }, "waitCheckIntervalMinutes": 0, "waitCheckDurationMinutes": 0, "waitCheckWorkerId": "worker_bob", "waitCheckRequiresLab": false, "assignedWorkerId": "worker_bob", "workLocation": "lab", "interruptible": false, "manualStartAt": null, "equipmentRequirements": [{ "equipmentId": "eq_centrifuge", "equipmentName": "冷却遠心機", "occupancyMinutes": 90, "occupancyStartOffsetMinutes": 30, "occupancyEndOffsetMinutes": 120, "requiresContinuousMonitoring": false }], "notes": "", "status": "未着手", "remainingWorkMinutes": 120, "actualStartedAt": null, "actualEndedAt": null, "actualSegments": [] },
+    { "id": "qpcr_rt", "ownerType": "plan", "ownerId": "plan_qpcr", "name": "逆転写反応", "workDurationMinutes": 30, "waitDurationMinutes": 90, "waitDurationType": "calendar", "predecessorIds": ["qpcr_extract"], "labRequirement": { "start": true, "end": true, "waitCheck": false }, "waitCheckIntervalMinutes": 0, "waitCheckDurationMinutes": 0, "waitCheckWorkerId": "worker_bob", "waitCheckRequiresLab": false, "assignedWorkerId": "worker_bob", "workLocation": "lab", "interruptible": false, "manualStartAt": null, "equipmentRequirements": [{ "equipmentId": "eq_thermal", "equipmentName": "サーマルサイクラー", "occupancyMinutes": 120, "occupancyStartOffsetMinutes": 0, "occupancyEndOffsetMinutes": 120, "requiresContinuousMonitoring": false }], "notes": "作業終了後も装置を占有", "status": "未着手", "remainingWorkMinutes": 30, "actualStartedAt": null, "actualEndedAt": null, "actualSegments": [] },
+    { "id": "qpcr_run", "ownerType": "plan", "ownerId": "plan_qpcr", "name": "qPCR測定", "workDurationMinutes": 45, "waitDurationMinutes": 120, "waitDurationType": "calendar", "predecessorIds": ["qpcr_rt"], "labRequirement": { "start": true, "end": true, "waitCheck": true }, "waitCheckIntervalMinutes": 60, "waitCheckDurationMinutes": 10, "waitCheckWorkerId": "worker_bob", "waitCheckRequiresLab": true, "assignedWorkerId": "worker_bob", "workLocation": "lab", "interruptible": false, "manualStartAt": null, "equipmentRequirements": [{ "equipmentId": "eq_qpcr", "equipmentName": "リアルタイムPCR装置", "occupancyMinutes": 165, "occupancyStartOffsetMinutes": 0, "occupancyEndOffsetMinutes": 165, "requiresContinuousMonitoring": false }], "notes": "待機開始60分後に10分の必須確認", "status": "未着手", "remainingWorkMinutes": 45, "actualStartedAt": null, "actualEndedAt": null, "actualSegments": [] },
+
+    { "id": "protein_batch", "ownerType": "plan", "ownerId": "plan_protein", "name": "試料破砕・前処理", "workDurationMinutes": 300, "waitDurationMinutes": 0, "waitDurationType": "calendar", "predecessorIds": [], "labRequirement": { "start": true, "end": true, "waitCheck": false }, "waitCheckIntervalMinutes": 0, "waitCheckDurationMinutes": 0, "waitCheckWorkerId": "worker_alice", "waitCheckRequiresLab": false, "assignedWorkerId": "worker_alice", "workLocation": "lab", "interruptible": true, "manualStartAt": null, "equipmentRequirements": [{ "equipmentId": "eq_homogenizer", "equipmentName": "ホモジナイザー", "occupancyMinutes": 360, "occupancyStartOffsetMinutes": 0, "occupancyEndOffsetMinutes": 360, "requiresContinuousMonitoring": false }], "notes": "複数試料をまとめて処理", "status": "未着手", "remainingWorkMinutes": 300, "actualStartedAt": null, "actualEndedAt": null, "actualSegments": [] },
+    { "id": "protein_spin", "ownerType": "plan", "ownerId": "plan_protein", "name": "清澄化遠心", "workDurationMinutes": 30, "waitDurationMinutes": 60, "waitDurationType": "calendar", "predecessorIds": ["protein_batch"], "labRequirement": { "start": true, "end": false, "waitCheck": false }, "waitCheckIntervalMinutes": 0, "waitCheckDurationMinutes": 0, "waitCheckWorkerId": "worker_bob", "waitCheckRequiresLab": false, "assignedWorkerId": "worker_bob", "workLocation": "lab", "interruptible": false, "manualStartAt": null, "equipmentRequirements": [{ "equipmentId": "eq_centrifuge", "equipmentName": "冷却遠心機", "occupancyMinutes": 90, "occupancyStartOffsetMinutes": 0, "occupancyEndOffsetMinutes": 90, "requiresContinuousMonitoring": false }], "notes": "作業終了後60分まで占有", "status": "未着手", "remainingWorkMinutes": 30, "actualStartedAt": null, "actualEndedAt": null, "actualSegments": [] },
+    { "id": "protein_column", "ownerType": "plan", "ownerId": "plan_protein", "name": "カラム精製", "workDurationMinutes": 90, "waitDurationMinutes": 120, "waitDurationType": "working", "predecessorIds": ["protein_spin"], "labRequirement": { "start": true, "end": true, "waitCheck": true }, "waitCheckIntervalMinutes": 60, "waitCheckDurationMinutes": 10, "waitCheckWorkerId": "worker_alice", "waitCheckRequiresLab": true, "assignedWorkerId": "worker_alice", "workLocation": "lab", "interruptible": true, "manualStartAt": null, "equipmentRequirements": [{ "equipmentId": "eq_chrom", "equipmentName": "クロマトグラフィー装置", "occupancyMinutes": 210, "occupancyStartOffsetMinutes": 0, "occupancyEndOffsetMinutes": 210, "requiresContinuousMonitoring": false }], "notes": "作業可能時間で進む待機と必須確認", "status": "未着手", "remainingWorkMinutes": 90, "actualStartedAt": null, "actualEndedAt": null, "actualSegments": [] }
+  ],
+  "availability": {
+    "timeZone": "Asia/Tokyo",
+    "activeProfileId": "profile_lab",
+    "profiles": [
+      { "id": "profile_lab", "name": "研究室", "locationType": "lab", "weekly": [
+        { "dayOfWeek": 0, "enabled": false, "startTime": "09:00", "endTime": "18:00" }, { "dayOfWeek": 1, "enabled": true, "startTime": "09:00", "endTime": "18:00" }, { "dayOfWeek": 2, "enabled": true, "startTime": "09:00", "endTime": "18:00" }, { "dayOfWeek": 3, "enabled": true, "startTime": "09:00", "endTime": "18:00" }, { "dayOfWeek": 4, "enabled": true, "startTime": "09:00", "endTime": "18:00" }, { "dayOfWeek": 5, "enabled": true, "startTime": "09:00", "endTime": "18:00" }, { "dayOfWeek": 6, "enabled": false, "startTime": "09:00", "endTime": "18:00" }
+      ] },
+      { "id": "profile_home", "name": "自宅", "locationType": "home", "weekly": [
+        { "dayOfWeek": 0, "enabled": true, "startTime": "07:00", "endTime": "22:00" }, { "dayOfWeek": 1, "enabled": true, "startTime": "07:00", "endTime": "22:00" }, { "dayOfWeek": 2, "enabled": true, "startTime": "07:00", "endTime": "22:00" }, { "dayOfWeek": 3, "enabled": true, "startTime": "07:00", "endTime": "22:00" }, { "dayOfWeek": 4, "enabled": true, "startTime": "07:00", "endTime": "22:00" }, { "dayOfWeek": 5, "enabled": true, "startTime": "07:00", "endTime": "22:00" }, { "dayOfWeek": 6, "enabled": true, "startTime": "07:00", "endTime": "22:00" }
+      ] }
+    ],
+    "holidays": [{ "id": "holiday_maintenance", "date": "2031-06-04", "name": "施設点検日" }],
+    "exceptions": []
+  },
+  "equipment": [
+    { "id": "eq_bsc", "name": "安全キャビネット", "capacity": 1, "unavailablePeriods": [] },
+    { "id": "eq_incubator", "name": "CO2インキュベーター", "capacity": 1, "unavailablePeriods": [] },
+    { "id": "eq_microscope", "name": "蛍光顕微鏡", "capacity": 1, "unavailablePeriods": [] },
+    { "id": "eq_centrifuge", "name": "冷却遠心機", "capacity": 1, "unavailablePeriods": [] },
+    { "id": "eq_thermal", "name": "サーマルサイクラー", "capacity": 1, "unavailablePeriods": [] },
+    { "id": "eq_qpcr", "name": "リアルタイムPCR装置", "capacity": 1, "unavailablePeriods": [] },
+    { "id": "eq_homogenizer", "name": "ホモジナイザー", "capacity": 1, "unavailablePeriods": [] },
+    { "id": "eq_chrom", "name": "クロマトグラフィー装置", "capacity": 1, "unavailablePeriods": [] }
+  ],
+  "workers": [
+    { "id": "worker_alice", "name": "研究者A", "labAvailabilityProfileId": "profile_lab", "homeAvailabilityProfileId": "profile_home", "unavailablePeriods": [], "active": true },
+    { "id": "worker_bob", "name": "研究者B", "labAvailabilityProfileId": "profile_lab", "homeAvailabilityProfileId": "profile_home", "unavailablePeriods": [], "active": true }
+  ],
+  "attendancePreferences": [
+    { "id": "attendance_maintenance", "date": "2031-06-04", "type": "cannotVisit", "note": "施設点検のため入室不可" },
+    { "id": "attendance_prefer", "date": "2031-06-06", "type": "preferOff", "note": "可能なら在宅日にする" }
+  ],
+  "scheduleVersions": [],
+  "optimizationRuns": [],
+  "optimizationResults": [],
+  "confirmedOptimizationResultId": null
+}

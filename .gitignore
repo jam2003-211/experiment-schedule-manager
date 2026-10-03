@@ -1,0 +1,46 @@
+# User and research data
+/data/
+/user-data/
+/research-data/
+/exports/
+/downloads/
+
+# Backups
+/backup/
+/backups/
+*.bak
+*.backup
+experiment-schedule-backup-*.json
+
+# Secrets and personal configuration
+.env
+.env.*
+!.env.example
+*credentials*.json
+*secret*.json
+*.pem
+*.key
+
+# Temporary files and logs
+*.log
+*.tmp
+*.temp
+*.crdownload
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Browser-test generated files
+/.e2e-profile/
+/.practical-profile/
+/test-results/
+/playwright-report/
+/blob-report/
+/screenshots/
+/coverage/
+
+# Local dependencies and editor settings
+/node_modules/
+/.vscode/
+/.idea/
