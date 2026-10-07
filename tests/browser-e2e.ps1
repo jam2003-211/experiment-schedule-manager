@@ -245,7 +245,10 @@ try {
     card.querySelector('[data-action="add-step"]').click();
     document.getElementById('stepName').value = values.name;
     document.getElementById('workDurationMinutes').value = values.work;
-    document.getElementById('waitDurationMinutes').value = values.wait;
+    const wait = ExperimentCore.splitWaitDurationMinutes(values.wait);
+    document.getElementById('waitDurationDays').value = wait.days;
+    document.getElementById('waitDurationHours').value = wait.hours;
+    document.getElementById('waitDurationMinutesPart').value = wait.minutes;
     document.getElementById('waitDurationType').value = values.waitType;
     document.getElementById('labAtStart').checked = values.start;
     document.getElementById('labAtEnd').checked = values.end;
@@ -269,6 +272,28 @@ try {
   $stepShapeOk = $stepsCreated.count -eq 2 -and $stepsCreated.first.workDurationMinutes -eq 45 -and $stepsCreated.first.waitDurationMinutes -eq 120 -and $stepsCreated.first.labRequirement.start -and $stepsCreated.first.labRequirement.waitCheck -and $stepsCreated.first.equipmentRequirements[0].occupancyMinutes -eq 120 -and $stepsCreated.second.predecessorIds[0] -eq $stepsCreated.first.id
   Add-Result 'Step fields and dependency' ($stepShapeOk -and $stepsCreated.equipment -eq 2) 'Saved work/wait, lab visits, equipment occupancy, and predecessor IDs'
 
+  $waitDurationUi = Invoke-Js @'
+(() => {
+  const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),step=d.steps.find(x=>x.ownerType==='template'&&x.waitDurationMinutes===120);
+  document.querySelector(`[data-step-id="${step.id}"] [data-action="edit-step"]`).click();
+  const legacy={days:document.getElementById('waitDurationDays').value,hours:document.getElementById('waitDurationHours').value,minutes:document.getElementById('waitDurationMinutesPart').value};
+  document.getElementById('waitDurationDays').value='2';document.getElementById('waitDurationHours').value='3';document.getElementById('waitDurationMinutesPart').value='30';document.getElementById('stepForm').requestSubmit();
+  const converted=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)).steps.find(x=>x.id===step.id).waitDurationMinutes;
+  document.querySelector(`[data-step-id="${step.id}"] [data-action="edit-step"]`).click();document.getElementById('waitDurationDays').value='0';document.getElementById('waitDurationHours').value='2';document.getElementById('waitDurationMinutesPart').value='0';document.getElementById('stepForm').requestSubmit();
+  return {legacy,converted,restored:JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)).steps.find(x=>x.id===step.id).waitDurationMinutes};
+})()
+'@
+  Add-Result 'Flexible wait duration input' ($waitDurationUi.legacy.days -eq '0' -and $waitDurationUi.legacy.hours -eq '2' -and $waitDurationUi.legacy.minutes -eq '0' -and $waitDurationUi.converted -eq 3090 -and $waitDurationUi.restored -eq 120) 'Loaded legacy minutes into day-hour-minute fields and saved 2d 3h 30m as 3090 minutes'
+
+  $invalidWaitDuration = Invoke-Js @'
+(() => {
+  const before=localStorage.getItem(ExperimentCore.STORAGE_KEY),d=JSON.parse(before),step=d.steps.find(x=>x.ownerType==='template');
+  document.querySelector(`[data-step-id="${step.id}"] [data-action="edit-step"]`).click();document.getElementById('waitDurationHours').value='24';document.getElementById('stepForm').requestSubmit();
+  const result={unchanged:before===localStorage.getItem(ExperimentCore.STORAGE_KEY),open:document.getElementById('stepDialog').open,error:document.getElementById('stepAlert').textContent};document.getElementById('stepDialog').close();return result;
+})()
+'@
+  Add-Result 'Invalid wait duration rejection' ($invalidWaitDuration.unchanged -and $invalidWaitDuration.open -and $invalidWaitDuration.error.Length -gt 0) 'Rejected an out-of-range hour without changing saved data'
+
   $cycle = Invoke-Js @'
 (() => {
   const d = JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY));
@@ -287,6 +312,34 @@ try {
 '@
   Add-Result 'Cycle rejection' ($cycle.unchanged -and $cycle.dialogWasOpen) 'Rejected circular dependency without changing saved step'
 
+  $templateOrder = Invoke-Js @'
+(() => {
+  const before=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),template=before.templates[0],ordered=ExperimentCore.orderedOwnerSteps(before.steps,'template',template.id),moved=ordered[0];
+  const dependencies=JSON.stringify(ordered.map(x=>({id:x.id,predecessorIds:x.predecessorIds})).sort((a,b)=>a.id.localeCompare(b.id)));
+  const card=document.querySelector(`[data-owner-type="template"][data-owner-id="${template.id}"]`),buttons=card.querySelectorAll('[data-action="move-step-up"],[data-action="move-step-down"]').length,note=card.querySelector('.display-order-note')?.textContent||'';
+  card.querySelector(`[data-step-id="${moved.id}"] [data-action="move-step-down"]`).click();
+  const after=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),orderedAfter=ExperimentCore.orderedOwnerSteps(after.steps,'template',template.id),dependenciesAfter=JSON.stringify(orderedAfter.map(x=>({id:x.id,predecessorIds:x.predecessorIds})).sort((a,b)=>a.id.localeCompare(b.id)));
+  const expected=ordered[1].id+','+ordered[0].id,actual=orderedAfter.map(x=>x.id).join(',');
+  return {templateId:template.id,expected,actual,buttons,note,orderChanged:actual===expected,controlsValid:buttons>=4,noteValid:note.includes('\u8868\u793a\u9806\u3060\u3051'),dependenciesUnchanged:dependencies===dependenciesAfter,graphValid:ExperimentCore.validateDependencyGraph(orderedAfter).valid};
+})()
+'@
+  $templateOrderDetail = "expected=$($templateOrder.expected) actual=$($templateOrder.actual) buttons=$($templateOrder.buttons) note=$($templateOrder.note)"
+  Add-Result 'Template step display reorder' ($templateOrder.orderChanged -and $templateOrder.controlsValid -and $templateOrder.noteValid) $templateOrderDetail
+  Add-Result 'Template reorder dependency separation' ($templateOrder.dependenciesUnchanged -and $templateOrder.graphValid) 'Kept predecessor dependencies unchanged while reordering template display'
+
+  $templateOrderAfterAddDelete = Invoke-Js @'
+(() => {
+  const before=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),template=before.templates[0],card=document.querySelector(`[data-owner-type="template"][data-owner-id="${template.id}"]`);
+  card.querySelector('[data-action="add-step"]').click();document.getElementById('stepName').value='Temporary step';document.getElementById('workDurationMinutes').value='10';document.getElementById('stepForm').requestSubmit();
+  const added=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),orderedAdded=ExperimentCore.orderedOwnerSteps(added.steps,'template',template.id),temporary=orderedAdded.find(x=>x.name==='Temporary step');
+  document.querySelector(`[data-step-id="${temporary.id}"] [data-action="delete-step"]`).click();document.querySelector('#confirmDialog button[value="confirm"]').click();
+  const after=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),orderedAfter=ExperimentCore.orderedOwnerSteps(after.steps,'template',template.id);
+  return {addedOrders:orderedAdded.map(x=>x.displayOrder),afterOrders:orderedAfter.map(x=>x.displayOrder),afterIds:orderedAfter.map(x=>x.id).join(','),expected:'$templateOrderExpected'};
+})()
+'@
+  $templateOrderAfterAddDelete.expected = $templateOrder.expected
+  Add-Result 'Template order after add and delete' (($templateOrderAfterAddDelete.addedOrders -join ',') -eq '0,1,2' -and ($templateOrderAfterAddDelete.afterOrders -join ',') -eq '0,1' -and $templateOrderAfterAddDelete.afterIds -eq $templateOrderAfterAddDelete.expected) 'Kept contiguous saved displayOrder after adding and deleting a template step'
+
   $plans = Invoke-Js @'
 (() => {
   const d = JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)); const templateId = d.templates[0].id;
@@ -295,10 +348,12 @@ try {
   document.getElementById('applyForm').requestSubmit();
   const after = JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY));
   const planSteps = after.steps.filter(x => x.ownerType === 'plan'); const templateSteps = after.steps.filter(x => x.ownerType === 'template');
-  return {plans:after.plans.length,planSteps:planSteps.length,templateSteps:templateSteps.length,idsIndependent:planSteps.every(x => !templateSteps.some(t => t.id === x.id)),sourceLinked:planSteps.every(x => !!x.sourceTemplateStepId)};
+  const sourceOrder=ExperimentCore.orderedOwnerSteps(after.steps,'template',templateId).map(x=>x.id).join(',');
+  const inherited=after.plans.every(plan=>ExperimentCore.orderedOwnerSteps(after.steps,'plan',plan.id).map(x=>x.sourceTemplateStepId).join(',')===sourceOrder);
+  return {plans:after.plans.length,planSteps:planSteps.length,templateSteps:templateSteps.length,idsIndependent:planSteps.every(x => !templateSteps.some(t => t.id === x.id)),sourceLinked:planSteps.every(x => !!x.sourceTemplateStepId),inherited};
 })()
 '@
-  Add-Result 'Apply to multiple experiments' ($plans.plans -eq 2 -and $plans.planSteps -eq 4 -and $plans.templateSteps -eq 2 -and $plans.idsIndependent -and $plans.sourceLinked) 'Created two plans with independent cloned step IDs'
+  Add-Result 'Apply to multiple experiments' ($plans.plans -eq 2 -and $plans.planSteps -eq 4 -and $plans.templateSteps -eq 2 -and $plans.idsIndependent -and $plans.sourceLinked -and $plans.inherited) 'Created two plans with independent cloned step IDs and inherited template display order'
 
   $independence = Invoke-Js @'
 (() => {
@@ -324,10 +379,12 @@ try {
 (() => {
   const data = JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY));
   const roundTrip = ExperimentCore.parseBackup(ExperimentCore.serializeData(data));
-  return {templates:data.templates.length,plans:data.plans.length,steps:data.steps.length,valid:roundTrip.valid,roundTripSteps:roundTrip.valid ? roundTrip.data.steps.length : -1};
+  const template=data.templates[0],templateOrder=ExperimentCore.orderedOwnerSteps(data.steps,'template',template.id).map(x=>x.id).join(',');
+  return {templates:data.templates.length,plans:data.plans.length,steps:data.steps.length,valid:roundTrip.valid,roundTripSteps:roundTrip.valid ? roundTrip.data.steps.length : -1,templateOrder};
 })()
 '@
   Add-Result 'Stage 2 persistence and backup' ($stage2Persistence.templates -eq 1 -and $stage2Persistence.plans -eq 2 -and $stage2Persistence.steps -eq 6 -and $stage2Persistence.valid -and $stage2Persistence.roundTripSteps -eq 6) 'Reloaded and validated backup round-trip with template and plan steps'
+  Add-Result 'Template display order reload persistence' ($stage2Persistence.templateOrder -eq $templateOrder.expected) 'Retained template displayOrder after page reload and JSON round-trip'
 
   $scheduleAlgorithms = Invoke-Js @'
 (() => {
@@ -479,7 +536,8 @@ try {
 (() => {
   document.querySelector('[data-view="plans"]').click();
   const firstPlan=document.querySelector('#planList [data-owner-type="plan"]');
-  firstPlan.querySelector('[data-action="progress-step"]').click();
+  const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),planId=firstPlan.dataset.ownerId,steps=ExperimentCore.orderedOwnerSteps(d.steps,'plan',planId),step=steps.find(item=>steps.some(candidate=>(candidate.predecessorIds||[]).includes(item.id)));
+  firstPlan.querySelector(`[data-step-id="${step.id}"] [data-action="progress-step"]`).click();
   const impact=document.getElementById('progressImpact'),result={visible:!impact.hidden,text:impact.textContent};
   document.getElementById('progressDialog').close();return result;
 })()

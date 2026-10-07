@@ -152,7 +152,7 @@
       <div class="form-grid step-form-grid">
         <label class="full"><span>工程名 <em>必須</em></span><input id="stepName" maxlength="100" required placeholder="例：試料を遠心分離"></label>
         <label><span>作業時間（分） <em>必須</em></span><input id="workDurationMinutes" type="number" min="0" step="1" value="30"><small>人が作業する時間。待機中は別実験を進められます。</small></label>
-        <label><span>待機時間（分）</span><input id="waitDurationMinutes" type="number" min="0" step="1" value="0"><small>反応・培養など、人が拘束されない時間。</small></label>
+        <fieldset class="wait-duration-field"><legend>待機時間</legend><div class="wait-duration-inputs"><label><span>日</span><input id="waitDurationDays" type="number" min="0" step="1" value="0"></label><label><span>時間</span><input id="waitDurationHours" type="number" min="0" max="23" step="1" value="0"></label><label><span>分</span><input id="waitDurationMinutesPart" type="number" min="0" max="59" step="1" value="0"></label></div><small>反応・培養など、人が拘束されない時間。</small></fieldset>
         <label><span>待機時間の数え方</span><select id="waitDurationType"><option value="calendar">暦時間（休日中も進む）</option><option value="working">作業可能時間のみ</option></select></label>
         <label><span>担当作業者</span><select id="assignedWorkerId"></select></label>
         <label><span>作業場所</span><select id="workLocation"><option value="lab">研究室</option><option value="home">自宅</option></select></label>

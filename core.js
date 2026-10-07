@@ -31,6 +31,19 @@
   const normalizeText = (value) => typeof value === "string" ? value.trim() : "";
   const finiteNumber = (value) => { const number = Number(value); return Number.isFinite(number) ? number : NaN; };
 
+  function splitWaitDurationMinutes(value) {
+    const totalMinutes = finiteNumber(value);
+    if (!Number.isInteger(totalMinutes) || totalMinutes < 0) return { days: 0, hours: 0, minutes: 0 };
+    return { days: Math.floor(totalMinutes / 1440), hours: Math.floor((totalMinutes % 1440) / 60), minutes: totalMinutes % 60 };
+  }
+  function combineWaitDurationParts(input) {
+    const days = finiteNumber(input?.days), hours = finiteNumber(input?.hours), minutes = finiteNumber(input?.minutes), errors = {};
+    if (!Number.isInteger(days) || days < 0) errors.waitDurationDays = "待機日数は0以上の整数で入力してください。";
+    if (!Number.isInteger(hours) || hours < 0 || hours > 23) errors.waitDurationHours = "待機時間は0〜23の整数で入力してください。";
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 59) errors.waitDurationMinutesPart = "待機分は0〜59の整数で入力してください。";
+    return { valid: Object.keys(errors).length === 0, errors, totalMinutes: Object.keys(errors).length ? NaN : days * 1440 + hours * 60 + minutes };
+  }
+
   function validateIdea(input) {
     const errors = {}, name = normalizeText(input.name), priority = normalizeText(input.priority), status = normalizeText(input.status), date = normalizeText(input.desiredCompletionDate);
     if (!name) errors.name = "実験名を入力してください。";
@@ -128,19 +141,20 @@
     return owned.sort((a, b) => a.step.displayOrder - b.step.displayOrder || a.sourceIndex - b.sourceIndex).map((item) => item.step);
   }
 
-  function movePlanStepDisplayOrder(steps, planId, stepId, offset) {
-    const ordered = orderedOwnerSteps(steps, "plan", planId), currentIndex = ordered.findIndex((step) => step.id === stepId), targetIndex = currentIndex + Number(offset);
+  function moveOwnerStepDisplayOrder(steps, ownerType, ownerId, stepId, offset) {
+    const ordered = orderedOwnerSteps(steps, ownerType, ownerId), currentIndex = ordered.findIndex((step) => step.id === stepId), targetIndex = currentIndex + Number(offset);
     if (currentIndex < 0) return { moved: false, error: "並べ替える工程が見つかりません。", orderedStepIds: ordered.map((step) => step.id) };
     if (!Number.isInteger(Number(offset)) || ![-1, 1].includes(Number(offset)) || targetIndex < 0 || targetIndex >= ordered.length) return { moved: false, error: "これ以上移動できません。", orderedStepIds: ordered.map((step) => step.id) };
     [ordered[currentIndex], ordered[targetIndex]] = [ordered[targetIndex], ordered[currentIndex]];
     ordered.forEach((step, index) => { step.displayOrder = index; });
     return { moved: true, error: null, orderedStepIds: ordered.map((step) => step.id) };
   }
+  function movePlanStepDisplayOrder(steps, planId, stepId, offset) { return moveOwnerStepDisplayOrder(steps, "plan", planId, stepId, offset); }
 
   function createPlanFromTemplate(data, templateId, experimentIdeaId) {
     const template = data.templates.find((item) => item.id === templateId), idea = data.experimentIdeas.find((item) => item.id === experimentIdeaId);
     if (!template || !idea) throw new Error("テンプレートまたは実験が見つかりません。");
-    const sourceSteps = data.steps.filter((step) => step.ownerType === "template" && step.ownerId === templateId);
+    const sourceSteps = orderedOwnerSteps(data.steps, "template", templateId);
     const graph = validateDependencyGraph(sourceSteps); if (!graph.valid) throw new Error(graph.errors[0]);
     const now = nowIso();
     const targetCompletionDate = idea.desiredCompletionDate || "";
@@ -414,5 +428,5 @@
     return validation.valid ? { valid: true, data: migration.data, migrated: migration.migrated, errors: [] } : { valid: false, errors: validation.errors };
   }
 
-  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, validateIdea, sanitizeIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, validateDependencyGraph, orderedOwnerSteps, movePlanStepDisplayOrder, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, migrateData, validateData, hydrateData, serializeData, parseBackup };
+  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, splitWaitDurationMinutes, combineWaitDurationParts, validateIdea, sanitizeIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, validateDependencyGraph, orderedOwnerSteps, moveOwnerStepDisplayOrder, movePlanStepDisplayOrder, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, migrateData, validateData, hydrateData, serializeData, parseBackup };
 });

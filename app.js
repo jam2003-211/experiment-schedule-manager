@@ -85,13 +85,13 @@
       ? `<button class="secondary" data-action="apply">計画へ適用</button><button class="icon-button" data-action="edit-owner" aria-label="編集">✎</button><button class="icon-button" data-action="delete-owner" aria-label="削除">⌫</button>`
       : `<span class="independent-badge">独立コピー</span><button class="icon-button" data-action="delete-owner" aria-label="削除">⌫</button>`;
     const targetText = owner.targetCompletionDateTime ? C.formatZoned(owner.targetCompletionDateTime, data.availability.timeZone) : formatDate(owner.targetCompletionDate);
-    return `<article class="card process-card" data-owner-type="${type}" data-owner-id="${escapeHtml(owner.id)}"><header><div><p class="eyebrow">${isTemplate ? "TEMPLATE" : "EXPERIMENT PLAN"}</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p>${!isTemplate && owner.scheduleNeedsRecalculation ? '<span class="result-state">工程または進捗の変更あり・再計算が必要です</span>' : ""}</div><div class="process-actions">${controls}</div></header><div class="process-summary"><span><strong>${steps.length}</strong> 工程</span><span>作業 <strong>${duration(steps.reduce((sum, step) => sum + step.workDurationMinutes, 0))}</strong></span><span>待機 <strong>${duration(steps.reduce((sum, step) => sum + step.waitDurationMinutes, 0))}</strong></span>${!isTemplate ? `<span>目標 <strong>${escapeHtml(targetText)}</strong></span>` : ""}</div>${!isTemplate && steps.length ? '<p class="display-order-note">↑↓は表示順だけを変更します。実施順序を変える場合は鉛筆ボタンで先行工程を編集してください。</p>' : ""}<div class="step-flow">${steps.length ? steps.map((step, index) => stepCard(step, steps, index)).join("") : '<div class="no-steps">工程はまだありません。</div>'}</div><button class="add-step-button" data-action="add-step">＋ 工程を追加</button></article>`;
+    return `<article class="card process-card" data-owner-type="${type}" data-owner-id="${escapeHtml(owner.id)}"><header><div><p class="eyebrow">${isTemplate ? "TEMPLATE" : "EXPERIMENT PLAN"}</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p>${!isTemplate && owner.scheduleNeedsRecalculation ? '<span class="result-state">工程または進捗の変更あり・再計算が必要です</span>' : ""}</div><div class="process-actions">${controls}</div></header><div class="process-summary"><span><strong>${steps.length}</strong> 工程</span><span>作業 <strong>${duration(steps.reduce((sum, step) => sum + step.workDurationMinutes, 0))}</strong></span><span>待機 <strong>${duration(steps.reduce((sum, step) => sum + step.waitDurationMinutes, 0))}</strong></span>${!isTemplate ? `<span>目標 <strong>${escapeHtml(targetText)}</strong></span>` : ""}</div>${steps.length ? '<p class="display-order-note">↑↓は表示順だけを変更します。実施順序を変える場合は鉛筆ボタンで先行工程を編集してください。</p>' : ""}<div class="step-flow">${steps.length ? steps.map((step, index) => stepCard(step, steps, index)).join("") : '<div class="no-steps">工程はまだありません。</div>'}</div><button class="add-step-button" data-action="add-step">＋ 工程を追加</button></article>`;
   }
   function stepCard(step, siblings, index) {
     const predecessors = (step.predecessorIds || []).map((id) => siblings.find((item) => item.id === id)?.name).filter(Boolean);
     const lab = []; if (step.labRequirement?.start) lab.push("開始時"); if (step.labRequirement?.end) lab.push("終了時"); if (step.labRequirement?.waitCheck) lab.push(`待機確認 ${duration(step.waitCheckIntervalMinutes)}ごと`);
     const equipment = (step.equipmentRequirements || []).map((item) => `${item.equipmentName} ${item.occupancyStartOffsetMinutes || 0}〜${item.occupancyEndOffsetMinutes ?? item.occupancyMinutes}分${item.requiresContinuousMonitoring ? "・監視" : ""}`).join("、"), worker = data.workers.find((item) => item.id === step.assignedWorkerId);
-    const orderControls = step.ownerType === "plan" ? `<button class="icon-button order-button" data-action="move-step-up" aria-label="${escapeHtml(step.name)}を上へ移動" title="表示順を上へ" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button order-button" data-action="move-step-down" aria-label="${escapeHtml(step.name)}を下へ移動" title="表示順を下へ" ${index === siblings.length - 1 ? "disabled" : ""}>↓</button>` : "";
+    const orderControls = `<button class="icon-button order-button" data-action="move-step-up" aria-label="${escapeHtml(step.name)}を上へ移動" title="表示順を上へ" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button order-button" data-action="move-step-down" aria-label="${escapeHtml(step.name)}を下へ移動" title="表示順を下へ" ${index === siblings.length - 1 ? "disabled" : ""}>↓</button>`;
     return `<div class="step-row" data-step-id="${escapeHtml(step.id)}"><div class="step-index">${index + 1}</div><div class="step-content"><div class="step-title"><strong>${escapeHtml(step.name)}</strong><span>作業 ${duration(step.workDurationMinutes)}</span>${step.waitDurationMinutes ? `<span class="wait-chip">待機 ${duration(step.waitDurationMinutes)}・${step.waitDurationType === "calendar" ? "暦時間" : "作業時間"}</span>` : ""}<span>${step.interruptible === false ? "中断不可" : "中断可能"}</span>${step.ownerType === "plan" ? `<span>${escapeHtml(step.status || "未着手")}${step.status === "実施中" ? `・残り${duration(step.remainingWorkMinutes)}` : ""}</span>` : ""}</div>${predecessors.length ? `<p class="dependency">↳ 先行: ${escapeHtml(predecessors.join("、"))}</p>` : '<p class="dependency">開始工程</p>'}<div class="step-meta"><span>${step.workLocation === "home" ? "自宅" : "研究室"}・${escapeHtml(worker?.name || "担当未設定")}</span>${equipment ? `<span>装置: ${escapeHtml(equipment)}</span>` : ""}${lab.length ? `<span>来室: ${escapeHtml(lab.join("、"))}</span>` : '<span>来室条件なし</span>'}</div></div><div class="card-actions">${orderControls}${step.ownerType === "plan" ? '<button class="icon-button" data-action="progress-step" aria-label="進捗">✓</button>' : ""}<button class="icon-button" data-action="edit-step" aria-label="工程を編集">✎</button><button class="icon-button" data-action="delete-step" aria-label="工程を削除">⌫</button></div></div>`;
   }
 
@@ -123,7 +123,7 @@
   }
   function openStepForm(ownerType, ownerId, step) {
     elements.stepForm.reset(); $("stepAlert").hidden = true; $("stepId").value = step?.id || ""; $("stepOwnerType").value = ownerType; $("stepOwnerId").value = ownerId; $("stepDialogTitle").textContent = step ? "工程を編集" : "工程を追加";
-    $("stepName").value = step?.name || ""; $("workDurationMinutes").value = step?.workDurationMinutes ?? 30; $("waitDurationMinutes").value = step?.waitDurationMinutes ?? 0; $("waitDurationType").value = step?.waitDurationType || "calendar";
+    $("stepName").value = step?.name || ""; $("workDurationMinutes").value = step?.workDurationMinutes ?? 30; const waitParts = C.splitWaitDurationMinutes(step?.waitDurationMinutes ?? 0); $("waitDurationDays").value = waitParts.days; $("waitDurationHours").value = waitParts.hours; $("waitDurationMinutesPart").value = waitParts.minutes; $("waitDurationType").value = step?.waitDurationType || "calendar";
     const workerOptions = data.workers.filter((worker) => worker.active !== false).map((worker) => `<option value="${escapeHtml(worker.id)}">${escapeHtml(worker.name)}</option>`).join(""); $("assignedWorkerId").innerHTML = workerOptions; $("waitCheckWorkerId").innerHTML = workerOptions;
     $("assignedWorkerId").value = step?.assignedWorkerId || data.workers[0]?.id || ""; $("workLocation").value = step?.workLocation || "lab"; $("interruptible").checked = step?.interruptible !== false;
     $("labAtStart").checked = !!step?.labRequirement?.start; $("labAtEnd").checked = !!step?.labRequirement?.end; $("labDuringWait").checked = !!step?.labRequirement?.waitCheck; $("waitCheckIntervalMinutes").value = step?.waitCheckIntervalMinutes || 60; $("waitCheckDurationMinutes").value = step?.waitCheckDurationMinutes || 5; $("waitCheckWorkerId").value = step?.waitCheckWorkerId || step?.assignedWorkerId || data.workers[0]?.id || ""; $("waitCheckRequiresLab").checked = step?.waitCheckRequiresLab !== false; $("stepNotes").value = step?.notes || "";
@@ -131,9 +131,9 @@
     $("predecessorOptions").innerHTML = siblings.length ? siblings.map((item) => `<label><input type="checkbox" value="${escapeHtml(item.id)}" ${(step?.predecessorIds || []).includes(item.id) ? "checked" : ""}> ${escapeHtml(item.name)}</label>`).join("") : '<p class="muted">先行工程はありません。</p>';
     $("equipmentRows").innerHTML = ""; (step?.equipmentRequirements || []).forEach(addEquipmentRow); updateWaitCheck(); elements.stepDialog.showModal(); setTimeout(() => $("stepName").focus(), 0);
   }
-  function collectStepInput() {
+  function collectStepInput(waitDurationMinutes) {
     return {
-      name: $("stepName").value, workDurationMinutes: $("workDurationMinutes").value, waitDurationMinutes: $("waitDurationMinutes").value, waitDurationType: $("waitDurationType").value,
+      name: $("stepName").value, workDurationMinutes: $("workDurationMinutes").value, waitDurationMinutes, waitDurationType: $("waitDurationType").value,
       predecessorIds: [...$("predecessorOptions").querySelectorAll("input:checked")].map((input) => input.value),
       labRequirement: { start: $("labAtStart").checked, end: $("labAtEnd").checked, waitCheck: $("labDuringWait").checked }, waitCheckIntervalMinutes: $("waitCheckIntervalMinutes").value, waitCheckDurationMinutes: $("waitCheckDurationMinutes").value, waitCheckWorkerId: $("waitCheckWorkerId").value, waitCheckRequiresLab: $("waitCheckRequiresLab").checked,
       assignedWorkerId: $("assignedWorkerId").value, workLocation: $("workLocation").value, interruptible: $("interruptible").checked,
@@ -141,7 +141,10 @@
     };
   }
   function submitStep(event) {
-    event.preventDefault(); const ownerType = $("stepOwnerType").value, ownerId = $("stepOwnerId").value, stepId = $("stepId").value, siblings = ownerSteps(ownerType, ownerId), input = collectStepInput();
+    event.preventDefault(); const ownerType = $("stepOwnerType").value, ownerId = $("stepOwnerId").value, stepId = $("stepId").value, siblings = ownerSteps(ownerType, ownerId);
+    const waitDuration = C.combineWaitDurationParts({ days: $("waitDurationDays").value, hours: $("waitDurationHours").value, minutes: $("waitDurationMinutesPart").value });
+    if (!waitDuration.valid) { const fieldId = Object.keys(waitDuration.errors)[0]; return showFormError($("stepAlert"), waitDuration.errors[fieldId], fieldId); }
+    const input = collectStepInput(waitDuration.totalMinutes);
     const validation = C.validateStep(input, siblings.filter((step) => step.id !== stepId), stepId || null);
     if (!validation.valid) return showFormError($("stepAlert"), Object.values(validation.errors)[0]);
     const index = data.steps.findIndex((step) => step.id === stepId), existing = index >= 0 ? data.steps[index] : null, candidate = C.sanitizeStep(input, existing, ownerType, ownerId);
@@ -152,11 +155,9 @@
     });
     const prospective = siblings.filter((step) => step.id !== candidate.id).concat(candidate), graph = C.validateDependencyGraph(prospective);
     if (!graph.valid) return showFormError($("stepAlert"), graph.errors[0]);
-    if (ownerType === "plan") {
-      const existingPosition = siblings.findIndex((step) => step.id === stepId);
-      siblings.forEach((step, position) => { step.displayOrder = position; });
-      candidate.displayOrder = existingPosition >= 0 ? existingPosition : siblings.length;
-    }
+    const existingPosition = siblings.findIndex((step) => step.id === stepId);
+    siblings.forEach((step, position) => { step.displayOrder = position; });
+    candidate.displayOrder = existingPosition >= 0 ? existingPosition : siblings.length;
     if (index >= 0) data.steps[index] = candidate; else data.steps.push(candidate); markPlanScheduleStale(ownerType, ownerId); elements.stepDialog.close(); saveData(index >= 0 ? "工程を更新しました" : "工程を追加しました");
   }
   function updateWaitCheck() { const disabled = !$("labDuringWait").checked; ["waitCheckIntervalMinutes", "waitCheckDurationMinutes", "waitCheckWorkerId", "waitCheckRequiresLab"].forEach((id) => { $(id).disabled = disabled; }); $("waitCheckField").classList.toggle("disabled", disabled); }
@@ -374,7 +375,7 @@
   }
   function deleteStep(type, ownerId, stepId) {
     const step = data.steps.find((item) => item.id === stepId), dependents = ownerSteps(type, ownerId).filter((item) => item.predecessorIds.includes(stepId));
-    askConfirm("工程を削除しますか？", `「${step.name}」を削除します。${dependents.length ? `後続工程 ${dependents.length}件から、この先行関係も削除されます。` : "後続工程への影響はありません。"}`, () => { data.steps = data.steps.filter((item) => item.id !== stepId); ownerSteps(type, ownerId).forEach((item) => { item.predecessorIds = item.predecessorIds.filter((id) => id !== stepId); }); markPlanScheduleStale(type, ownerId); saveData("工程を削除しました"); });
+    askConfirm("工程を削除しますか？", `「${step.name}」を削除します。${dependents.length ? `後続工程 ${dependents.length}件から、この先行関係も削除されます。` : "後続工程への影響はありません。"}`, () => { data.steps = data.steps.filter((item) => item.id !== stepId); ownerSteps(type, ownerId).forEach((item, position) => { item.predecessorIds = item.predecessorIds.filter((id) => id !== stepId); item.displayOrder = position; }); markPlanScheduleStale(type, ownerId); saveData("工程を削除しました"); });
   }
 
   function markPlanScheduleStale(ownerType, ownerId) {
@@ -382,10 +383,10 @@
     const plan = data.plans.find((item) => item.id === ownerId);
     if (plan && (plan.activeScheduleVersionId || plan.confirmedOptimizationResultId)) plan.scheduleNeedsRecalculation = true;
   }
-  function movePlanStep(ownerId, stepId, offset) {
-    const graph = C.validateDependencyGraph(ownerSteps("plan", ownerId));
+  function moveStep(ownerType, ownerId, stepId, offset) {
+    const graph = C.validateDependencyGraph(ownerSteps(ownerType, ownerId));
     if (!graph.valid) return showToast(`表示順を変更できません: ${graph.errors[0]}`);
-    const result = C.movePlanStepDisplayOrder(data.steps, ownerId, stepId, offset);
+    const result = C.moveOwnerStepDisplayOrder(data.steps, ownerType, ownerId, stepId, offset);
     if (!result.moved) return showToast(result.error);
     saveData("表示順を保存しました。実施順序と確定済みスケジュールは変更していません");
   }
@@ -399,8 +400,8 @@
     if (action === "edit-step") openStepForm(type, ownerId, step);
     if (action === "delete-step") deleteStep(type, ownerId, step.id);
     if (action === "progress-step") openProgress(step);
-    if (action === "move-step-up") movePlanStep(ownerId, step.id, -1);
-    if (action === "move-step-down") movePlanStep(ownerId, step.id, 1);
+    if (action === "move-step-up") moveStep(type, ownerId, step.id, -1);
+    if (action === "move-step-down") moveStep(type, ownerId, step.id, 1);
     if (action === "apply") openApplyDialog(ownerId);
   }
   function downstreamSteps(step) { const siblings = ownerSteps(step.ownerType, step.ownerId), found = new Set(), queue = [step.id]; while (queue.length) { const id = queue.shift(); siblings.filter((item) => (item.predecessorIds || []).includes(id) && !found.has(item.id)).forEach((item) => { found.add(item.id); queue.push(item.id); }); } return siblings.filter((item) => found.has(item.id)); }

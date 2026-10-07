@@ -90,3 +90,64 @@ test("旧データと表示順付き工程が混在しても元の配列順を�
   const steps = [step("legacy-a", 30), step("legacy-b", 30), { ...step("new-c", 30), displayOrder: 2 }];
   assert.deepEqual(core.orderedOwnerSteps(steps, "plan", "p").map((item) => item.id), ["legacy-a", "legacy-b", "new-c"]);
 });
+
+test("テンプレート工程の表示順を依存関係と分離して保存・再読込できる", () => {
+  const steps = [
+    { ...step("ta", 30), ownerType: "template", ownerId: "t", displayOrder: 0 },
+    { ...step("tb", 30, 0, "calendar", ["ta"]), ownerType: "template", ownerId: "t", displayOrder: 1 }
+  ];
+  const dependencies = JSON.stringify(steps.map((item) => item.predecessorIds));
+  const result = core.moveOwnerStepDisplayOrder(steps, "template", "t", "ta", 1);
+  assert.equal(result.moved, true);
+  assert.deepEqual(core.orderedOwnerSteps(steps, "template", "t").map((item) => item.id), ["tb", "ta"]);
+  assert.equal(JSON.stringify(steps.map((item) => item.predecessorIds)), dependencies);
+  const reloaded = JSON.parse(JSON.stringify(steps));
+  assert.deepEqual(core.orderedOwnerSteps(reloaded, "template", "t").map((item) => item.id), ["tb", "ta"]);
+  assert.equal(core.validateDependencyGraph(reloaded).valid, true);
+});
+
+test("テンプレートの表示順を複製した個別計画へ引き継ぐ", () => {
+  const data = core.createEmptyData();
+  data.templates = [{ id: "t", name: "Template", description: "" }];
+  data.experimentIdeas = [{ id: "i", name: "Idea", desiredCompletionDate: "2030-01-10" }];
+  data.steps = [
+    { ...step("ta", 30), ownerType: "template", ownerId: "t", displayOrder: 1 },
+    { ...step("tb", 30, 0, "calendar", ["ta"]), ownerType: "template", ownerId: "t", displayOrder: 0 }
+  ];
+  const result = core.createPlanFromTemplate(data, "t", "i");
+  assert.deepEqual(result.steps.map((item) => item.sourceTemplateStepId), ["tb", "ta"]);
+  assert.deepEqual(result.steps.map((item) => item.displayOrder), [0, 1]);
+  assert.equal(result.steps[0].predecessorIds[0], result.steps[1].id);
+  assert.deepEqual(core.orderedOwnerSteps(JSON.parse(JSON.stringify(result.steps)), "plan", result.plan.id).map((item) => item.sourceTemplateStepId), ["tb", "ta"]);
+  data.plans = [result.plan]; data.steps = result.steps;
+  const schedule = core.calculatePlanSchedule(data, result.plan.id, "2030-01-10T18:00", opts), bySource = Object.fromEntries(schedule.stepSchedules.map((item) => [result.steps.find((stepItem) => stepItem.id === item.stepId).sourceTemplateStepId, item]));
+  assert.equal(schedule.feasible, true);
+  assert.equal(bySource.ta.endAt, bySource.tb.startAt);
+});
+
+test("既存の1500分を1日1時間0分へ分解する", () => {
+  assert.deepEqual(core.splitWaitDurationMinutes(1500), { days: 1, hours: 1, minutes: 0 });
+});
+
+test("2日3時間30分を3090分へ変換する", () => {
+  assert.deepEqual(core.combineWaitDurationParts({ days: "2", hours: "3", minutes: "30" }), { valid: true, errors: {}, totalMinutes: 3090 });
+});
+
+test("既存の分単位データとJSONバックアップの互換性を維持する", () => {
+  const data = core.createEmptyData();
+  data.templates = [{ id: "t", name: "Template", description: "" }];
+  data.steps = [{ ...step("legacy", 30, 1500), ownerType: "template", ownerId: "t", assignedWorkerId: "worker_default", waitCheckWorkerId: "worker_default", workLocation: "lab" }];
+  const parsed = core.parseBackup(core.serializeData(data));
+  assert.equal(parsed.valid, true);
+  assert.equal(parsed.data.steps[0].waitDurationMinutes, 1500);
+  assert.deepEqual(core.splitWaitDurationMinutes(parsed.data.steps[0].waitDurationMinutes), { days: 1, hours: 1, minutes: 0 });
+});
+
+test("待機時間の日・時間・分の不正値を拒否する", () => {
+  for (const parts of [
+    { days: -1, hours: 0, minutes: 0 }, { days: 0.5, hours: 0, minutes: 0 },
+    { days: 0, hours: 24, minutes: 0 }, { days: 0, hours: 0, minutes: 60 },
+    { days: 0, hours: -1, minutes: 0 }, { days: 0, hours: 0, minutes: 1.5 }
+  ]) assert.equal(core.combineWaitDurationParts(parts).valid, false);
+  assert.equal(core.combineWaitDurationParts({ days: 0, hours: 0, minutes: 0 }).totalMinutes, 0);
+});
