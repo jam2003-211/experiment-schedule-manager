@@ -151,3 +151,52 @@ test("待機時間の日・時間・分の不正値を拒否する", () => {
   ]) assert.equal(core.combineWaitDurationParts(parts).valid, false);
   assert.equal(core.combineWaitDurationParts({ days: 0, hours: 0, minutes: 0 }).totalMinutes, 0);
 });
+
+function fullTemplateStep(id, ownerId, displayOrder, predecessors = []) {
+  return { ...step(id, 30, 0, "calendar", predecessors), ownerType: "template", ownerId, displayOrder, assignedWorkerId: "worker_default", waitCheckWorkerId: "worker_default", workLocation: "lab", interruptible: true, waitCheckDurationMinutes: 0, waitCheckRequiresLab: false, actualSegments: [], remainingWorkMinutes: 30 };
+}
+
+function multipleTemplateData() {
+  const data = core.createEmptyData();
+  data.templates = [{ id: "t1", name: "First", description: "" }, { id: "t2", name: "Second", description: "" }];
+  data.experimentIdeas = [{ id: "i", name: "Idea", priority: "中", status: "計画中", desiredCompletionDate: "2030-01-10", purpose: "", materials: "", plannedEquipment: "", notes: "" }];
+  data.steps = [fullTemplateStep("t1a", "t1", 0), fullTemplateStep("t2a", "t2", 1), fullTemplateStep("t2b", "t2", 0, ["t2a"])];
+  const created = core.createPlanFromTemplate(data, "t1", "i"); data.plans.push(created.plan); data.steps.push(...created.steps);
+  return { data, plan: created.plan, originalSteps: created.steps };
+}
+
+test("既存計画の末尾へ別テンプレートを順序と内部依存を保って追加する", () => {
+  const { data, plan, originalSteps } = multipleTemplateData(), originalJson = JSON.stringify(originalSteps);
+  const appended = core.appendTemplateToPlan(data, "t2", plan.id);
+  assert.equal(appended.alreadyApplied, false);
+  assert.equal(JSON.stringify(originalSteps), originalJson);
+  assert.deepEqual(appended.steps.map((item) => item.sourceTemplateStepId), ["t2b", "t2a"]);
+  assert.deepEqual(appended.steps.map((item) => item.displayOrder), [1, 2]);
+  assert.equal(appended.steps[0].predecessorIds[0], appended.steps[1].id);
+  assert.ok(appended.steps.every((item) => item.predecessorIds.every((id) => appended.steps.some((candidate) => candidate.id === id))));
+  assert.ok(appended.steps.every((item) => !originalSteps.some((existing) => existing.id === item.id)));
+});
+
+test("同じテンプレートを複数回追加しても工程IDと適用IDが重複しない", () => {
+  const { data, plan } = multipleTemplateData(), first = core.appendTemplateToPlan(data, "t2", plan.id);
+  data.steps.push(...first.steps); plan.templateApplications.push(first.application);
+  assert.equal(core.hasTemplateBeenApplied(data, plan.id, "t2"), true);
+  const second = core.appendTemplateToPlan(data, "t2", plan.id), ids = [...first.steps, ...second.steps].map((item) => item.id);
+  assert.equal(second.alreadyApplied, true);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.notEqual(first.application.id, second.application.id);
+  assert.deepEqual(second.steps.map((item) => item.displayOrder), [3, 4]);
+});
+
+test("追加工程は元テンプレートと独立しJSON復元後も保持される", () => {
+  const { data, plan } = multipleTemplateData(), appended = core.appendTemplateToPlan(data, "t2", plan.id);
+  data.steps.push(...appended.steps); plan.templateApplications.push(appended.application); plan.scheduleNeedsRecalculation = true;
+  const copiedNames = appended.steps.map((item) => item.name); data.steps.find((item) => item.id === "t2a").name = "Changed source";
+  assert.deepEqual(appended.steps.map((item) => item.name), copiedNames);
+  let parsed = core.parseBackup(core.serializeData(data)); assert.equal(parsed.valid, true);
+  assert.equal(core.orderedOwnerSteps(parsed.data.steps, "plan", plan.id).length, 3);
+  parsed.data.templates = parsed.data.templates.filter((item) => item.id !== "t2"); parsed.data.steps = parsed.data.steps.filter((item) => !(item.ownerType === "template" && item.ownerId === "t2"));
+  parsed = core.parseBackup(core.serializeData(parsed.data));
+  assert.equal(parsed.valid, true);
+  assert.equal(parsed.data.steps.filter((item) => item.ownerType === "plan" && item.ownerId === plan.id && item.sourceTemplateId === "t2").length, 2);
+});

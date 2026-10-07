@@ -96,7 +96,7 @@
   function sanitizeStep(input, existing, ownerType, ownerId) {
     const now = nowIso();
     return {
-      id: existing?.id || makeId("step"), ownerType, ownerId, sourceTemplateStepId: existing?.sourceTemplateStepId || null,
+      id: existing?.id || makeId("step"), ownerType, ownerId, sourceTemplateId: existing?.sourceTemplateId || null, sourceTemplateStepId: existing?.sourceTemplateStepId || null, templateApplicationId: existing?.templateApplicationId || null,
       name: normalizeText(input.name), workDurationMinutes: finiteNumber(input.workDurationMinutes), waitDurationMinutes: finiteNumber(input.waitDurationMinutes), waitDurationType: input.waitDurationType,
       predecessorIds: [...new Set(input.predecessorIds || [])],
       labRequirement: { start: !!input.labRequirement?.start, end: !!input.labRequirement?.end, waitCheck: !!input.labRequirement?.waitCheck },
@@ -151,16 +151,44 @@
   }
   function movePlanStepDisplayOrder(steps, planId, stepId, offset) { return moveOwnerStepDisplayOrder(steps, "plan", planId, stepId, offset); }
 
+  function cloneTemplateStepsForPlan(data, templateId, planId, startingDisplayOrder, applicationId) {
+    const template = data.templates.find((item) => item.id === templateId), plan = data.plans.find((item) => item.id === planId);
+    if (!template || !plan) throw new Error("テンプレートまたは実験計画が見つかりません。");
+    const sourceSteps = orderedOwnerSteps(data.steps, "template", templateId);
+    if (!sourceSteps.length) throw new Error("テンプレートに工程がありません。");
+    const graph = validateDependencyGraph(sourceSteps); if (!graph.valid) throw new Error(graph.errors[0]);
+    const now = nowIso(), idMap = new Map(sourceSteps.map((step) => [step.id, makeId("step")]));
+    return sourceSteps.map((step, index) => ({
+      ...deepClone(step), id: idMap.get(step.id), ownerType: "plan", ownerId: planId, sourceTemplateId: templateId, sourceTemplateStepId: step.id, templateApplicationId: applicationId,
+      displayOrder: startingDisplayOrder + index, predecessorIds: (step.predecessorIds || []).map((id) => idMap.get(id)), createdAt: now, updatedAt: now,
+      actualWorkMinutes: null, actualStartedAt: null, actualEndedAt: null, actualSegments: [], remainingWorkMinutes: step.workDurationMinutes, progressUpdatedAt: null, status: "未着手", plannedStartAt: null, plannedEndAt: null
+    }));
+  }
+
+  function hasTemplateBeenApplied(data, planId, templateId) {
+    const plan = data.plans.find((item) => item.id === planId); if (!plan) return false;
+    if (plan.sourceTemplateId === templateId || (plan.templateApplications || []).some((item) => item.templateId === templateId)) return true;
+    const templateStepIds = new Set(data.steps.filter((step) => step.ownerType === "template" && step.ownerId === templateId).map((step) => step.id));
+    return data.steps.some((step) => step.ownerType === "plan" && step.ownerId === planId && (step.sourceTemplateId === templateId || templateStepIds.has(step.sourceTemplateStepId)));
+  }
+
+  function appendTemplateToPlan(data, templateId, planId) {
+    const template = data.templates.find((item) => item.id === templateId), plan = data.plans.find((item) => item.id === planId);
+    if (!template || !plan) throw new Error("テンプレートまたは実験計画が見つかりません。");
+    const existingSteps = orderedOwnerSteps(data.steps, "plan", planId), highestOrder = existingSteps.reduce((highest, step) => Number.isInteger(step.displayOrder) ? Math.max(highest, step.displayOrder) : highest, -1);
+    const startingDisplayOrder = Math.max(existingSteps.length, highestOrder + 1), application = { id: makeId("templateApplication"), templateId, templateName: template.name, appliedAt: nowIso(), stepIds: [] };
+    const steps = cloneTemplateStepsForPlan(data, templateId, planId, startingDisplayOrder, application.id); application.stepIds = steps.map((step) => step.id);
+    return { application, steps, alreadyApplied: hasTemplateBeenApplied(data, planId, templateId) };
+  }
+
   function createPlanFromTemplate(data, templateId, experimentIdeaId) {
     const template = data.templates.find((item) => item.id === templateId), idea = data.experimentIdeas.find((item) => item.id === experimentIdeaId);
     if (!template || !idea) throw new Error("テンプレートまたは実験が見つかりません。");
-    const sourceSteps = orderedOwnerSteps(data.steps, "template", templateId);
-    const graph = validateDependencyGraph(sourceSteps); if (!graph.valid) throw new Error(graph.errors[0]);
     const now = nowIso();
     const targetCompletionDate = idea.desiredCompletionDate || "";
-    const plan = { id: makeId("plan"), experimentIdeaId, sourceTemplateId: templateId, name: `${idea.name} — ${template.name}`, targetCompletionDate, targetCompletionDateTime: targetCompletionDate ? zonedLocalToIso(`${targetCompletionDate}T18:00`, data.availability?.timeZone || "Asia/Tokyo") : "", activeScheduleVersionId: null, status: "下書き", createdAt: now, updatedAt: now };
-    const idMap = new Map(sourceSteps.map((step) => [step.id, makeId("step")]));
-    const steps = sourceSteps.map((step, index) => ({ ...JSON.parse(JSON.stringify(step)), id: idMap.get(step.id), ownerType: "plan", ownerId: plan.id, sourceTemplateStepId: step.id, displayOrder: index, predecessorIds: (step.predecessorIds || []).map((id) => idMap.get(id)), createdAt: now, updatedAt: now, actualWorkMinutes: null, actualStartedAt: null, actualEndedAt: null, status: "未着手" }));
+    const applicationId = makeId("templateApplication"), plan = { id: makeId("plan"), experimentIdeaId, sourceTemplateId: templateId, name: `${idea.name} — ${template.name}`, targetCompletionDate, targetCompletionDateTime: targetCompletionDate ? zonedLocalToIso(`${targetCompletionDate}T18:00`, data.availability?.timeZone || "Asia/Tokyo") : "", activeScheduleVersionId: null, status: "下書き", templateApplications: [], createdAt: now, updatedAt: now };
+    const dataWithPlan = { ...data, plans: [...data.plans, plan] }, steps = cloneTemplateStepsForPlan(dataWithPlan, templateId, plan.id, 0, applicationId);
+    plan.templateApplications.push({ id: applicationId, templateId, templateName: template.name, appliedAt: now, stepIds: steps.map((step) => step.id) });
     return { plan, steps };
   }
 
@@ -390,7 +418,13 @@
     for (const key of arrayKeys) if (Array.isArray(candidate[key])) candidate[key].forEach((item, index) => { if (!item || typeof item !== "object" || Array.isArray(item)) errors.push(`${key} ${index + 1}: オブジェクトである必要があります。`); else if (!item.id || typeof item.id !== "string") errors.push(`${key} ${index + 1}: IDがありません。`); else if (allIds.has(item.id)) errors.push(`${key} ${index + 1}: IDが重複しています。`); else allIds.add(item.id); });
     if (Array.isArray(candidate.templates)) candidate.templates.forEach((template, index) => { const result = validateTemplate(template || {}); Object.values(result.errors).forEach((message) => errors.push(`テンプレート ${index + 1}: ${message}`)); });
     const ideaIds = new Set(Array.isArray(candidate.experimentIdeas) ? candidate.experimentIdeas.map((item) => item?.id).filter(Boolean) : []), templateIds = new Set(Array.isArray(candidate.templates) ? candidate.templates.map((item) => item?.id).filter(Boolean) : []), planIds = new Set(Array.isArray(candidate.plans) ? candidate.plans.map((item) => item?.id).filter(Boolean) : []), equipmentIds = new Set(Array.isArray(candidate.equipment) ? candidate.equipment.map((item) => item?.id).filter(Boolean) : []), workerIds = new Set(Array.isArray(candidate.workers) ? candidate.workers.map((item) => item?.id).filter(Boolean) : []), scheduleIds = new Set(Array.isArray(candidate.scheduleVersions) ? candidate.scheduleVersions.map((item) => item?.id).filter(Boolean) : []), runIds = new Set(Array.isArray(candidate.optimizationRuns) ? candidate.optimizationRuns.map((item) => item?.id).filter(Boolean) : []), resultIds = new Set(Array.isArray(candidate.optimizationResults) ? candidate.optimizationResults.map((item) => item?.id).filter(Boolean) : []);
-    if (Array.isArray(candidate.plans)) candidate.plans.forEach((plan, index) => { if (!normalizeText(plan?.name)) errors.push(`実験計画 ${index + 1}: 計画名がありません。`); if (plan?.experimentIdeaId && !ideaIds.has(plan.experimentIdeaId)) errors.push(`実験計画 ${index + 1}: 参照する実験ストックが見つかりません。`); if (plan?.sourceTemplateId && !templateIds.has(plan.sourceTemplateId)) errors.push(`実験計画 ${index + 1}: 参照するテンプレートが見つかりません。`); if (!optionalIso(plan?.targetCompletionDateTime)) errors.push(`実験計画 ${index + 1}: 完成予定日時が正しくありません。`); if (plan?.activeScheduleVersionId && !scheduleIds.has(plan.activeScheduleVersionId)) errors.push(`実験計画 ${index + 1}: 有効な逆算結果が見つかりません。`); if (plan?.confirmedOptimizationResultId && !resultIds.has(plan.confirmedOptimizationResultId)) errors.push(`実験計画 ${index + 1}: 確定した最適化結果が見つかりません。`); });
+    if (Array.isArray(candidate.plans)) candidate.plans.forEach((plan, index) => {
+      if (!normalizeText(plan?.name)) errors.push(`実験計画 ${index + 1}: 計画名がありません。`); if (plan?.experimentIdeaId && !ideaIds.has(plan.experimentIdeaId)) errors.push(`実験計画 ${index + 1}: 参照する実験ストックが見つかりません。`); if (!optionalIso(plan?.targetCompletionDateTime)) errors.push(`実験計画 ${index + 1}: 完成予定日時が正しくありません。`); if (plan?.activeScheduleVersionId && !scheduleIds.has(plan.activeScheduleVersionId)) errors.push(`実験計画 ${index + 1}: 有効な逆算結果が見つかりません。`); if (plan?.confirmedOptimizationResultId && !resultIds.has(plan.confirmedOptimizationResultId)) errors.push(`実験計画 ${index + 1}: 確定した最適化結果が見つかりません。`);
+      if (plan?.templateApplications !== undefined) {
+        if (!Array.isArray(plan.templateApplications)) errors.push(`実験計画 ${index + 1}: テンプレート適用履歴は配列である必要があります。`);
+        else { const applicationIds = new Set(); plan.templateApplications.forEach((application) => { if (!application || typeof application !== "object" || !normalizeText(application.id) || !normalizeText(application.templateId) || !normalizeText(application.templateName) || !validIso(application.appliedAt) || !Array.isArray(application.stepIds)) errors.push(`実験計画 ${index + 1}: テンプレート適用履歴が正しくありません。`); else if (applicationIds.has(application.id)) errors.push(`実験計画 ${index + 1}: テンプレート適用履歴IDが重複しています。`); else applicationIds.add(application.id); }); }
+      }
+    });
     if (Array.isArray(candidate.equipment)) candidate.equipment.forEach((item, index) => { if (!normalizeText(item?.name)) errors.push(`装置 ${index + 1}: 装置名がありません。`); if (!Number.isInteger(Number(item?.capacity)) || Number(item.capacity) < 1) errors.push(`装置 ${index + 1}: 同時利用数が正しくありません。`); if (!Array.isArray(item?.unavailablePeriods)) errors.push(`装置 ${index + 1}: 利用不可期間は配列である必要があります。`); else item.unavailablePeriods.forEach((period) => { if (!validPeriod(period)) errors.push(`装置 ${index + 1}: 利用不可期間の日時が正しくありません。`); }); });
     if (Array.isArray(candidate.workers)) candidate.workers.forEach((worker, index) => { if (!normalizeText(worker?.name)) errors.push(`作業者 ${index + 1}: 名前がありません。`); if (!profileIds.has(worker?.labAvailabilityProfileId) || !profileIds.has(worker?.homeAvailabilityProfileId)) errors.push(`作業者 ${index + 1}: 作業可能時間プロファイルが見つかりません。`); if (!Array.isArray(worker?.unavailablePeriods)) errors.push(`作業者 ${index + 1}: 利用不可期間は配列である必要があります。`); else worker.unavailablePeriods.forEach((period) => { if (!validPeriod(period)) errors.push(`作業者 ${index + 1}: 利用不可期間の日時が正しくありません。`); }); });
     if (Array.isArray(candidate.attendancePreferences)) candidate.attendancePreferences.forEach((item, index) => { if (!parseDateKey(item?.date) || !["normal", "preferOff", "cannotVisit"].includes(item?.type)) errors.push(`来室設定 ${index + 1}: 日付または種類が正しくありません。`); });
@@ -428,5 +462,5 @@
     return validation.valid ? { valid: true, data: migration.data, migrated: migration.migrated, errors: [] } : { valid: false, errors: validation.errors };
   }
 
-  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, splitWaitDurationMinutes, combineWaitDurationParts, validateIdea, sanitizeIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, validateDependencyGraph, orderedOwnerSteps, moveOwnerStepDisplayOrder, movePlanStepDisplayOrder, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, migrateData, validateData, hydrateData, serializeData, parseBackup };
+  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, splitWaitDurationMinutes, combineWaitDurationParts, validateIdea, sanitizeIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, validateDependencyGraph, orderedOwnerSteps, moveOwnerStepDisplayOrder, movePlanStepDisplayOrder, hasTemplateBeenApplied, appendTemplateToPlan, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, migrateData, validateData, hydrateData, serializeData, parseBackup };
 });

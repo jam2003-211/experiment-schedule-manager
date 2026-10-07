@@ -10,7 +10,7 @@
     confirmDialog: $("confirmDialog"), search: $("searchInput"), filter: $("statusFilter"), sort: $("sortSelect"),
     toast: $("toast"), saveStatus: $("saveStatus"), formAlert: $("formAlert"), templateList: $("templateList"),
     templateDialog: $("templateDialog"), templateForm: $("templateForm"), stepDialog: $("stepDialog"), stepForm: $("stepForm"),
-    planList: $("planList"), applyDialog: $("applyDialog"), applyForm: $("applyForm")
+    planList: $("planList"), applyDialog: $("applyDialog"), applyForm: $("applyForm"), appendTemplateDialog: $("appendTemplateDialog"), appendTemplateForm: $("appendTemplateForm")
   };
 
   function loadData() {
@@ -83,9 +83,9 @@
     const subtitle = isTemplate ? (owner.description || "説明はありません") : `実験: ${idea?.name || "削除済み"} ／ 元テンプレート: ${source?.name || "削除済み"}`;
     const controls = isTemplate
       ? `<button class="secondary" data-action="apply">計画へ適用</button><button class="icon-button" data-action="edit-owner" aria-label="編集">✎</button><button class="icon-button" data-action="delete-owner" aria-label="削除">⌫</button>`
-      : `<span class="independent-badge">独立コピー</span><button class="icon-button" data-action="delete-owner" aria-label="削除">⌫</button>`;
+      : `<span class="independent-badge">独立コピー</span><button class="secondary" data-action="add-template">テンプレートを追加</button><button class="icon-button" data-action="delete-owner" aria-label="削除">⌫</button>`;
     const targetText = owner.targetCompletionDateTime ? C.formatZoned(owner.targetCompletionDateTime, data.availability.timeZone) : formatDate(owner.targetCompletionDate);
-    return `<article class="card process-card" data-owner-type="${type}" data-owner-id="${escapeHtml(owner.id)}"><header><div><p class="eyebrow">${isTemplate ? "TEMPLATE" : "EXPERIMENT PLAN"}</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p>${!isTemplate && owner.scheduleNeedsRecalculation ? '<span class="result-state">工程または進捗の変更あり・再計算が必要です</span>' : ""}</div><div class="process-actions">${controls}</div></header><div class="process-summary"><span><strong>${steps.length}</strong> 工程</span><span>作業 <strong>${duration(steps.reduce((sum, step) => sum + step.workDurationMinutes, 0))}</strong></span><span>待機 <strong>${duration(steps.reduce((sum, step) => sum + step.waitDurationMinutes, 0))}</strong></span>${!isTemplate ? `<span>目標 <strong>${escapeHtml(targetText)}</strong></span>` : ""}</div>${steps.length ? '<p class="display-order-note">↑↓は表示順だけを変更します。実施順序を変える場合は鉛筆ボタンで先行工程を編集してください。</p>' : ""}<div class="step-flow">${steps.length ? steps.map((step, index) => stepCard(step, steps, index)).join("") : '<div class="no-steps">工程はまだありません。</div>'}</div><button class="add-step-button" data-action="add-step">＋ 工程を追加</button></article>`;
+    return `<article class="card process-card" data-owner-type="${type}" data-owner-id="${escapeHtml(owner.id)}"><header><div><p class="eyebrow">${isTemplate ? "TEMPLATE" : "EXPERIMENT PLAN"}</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p>${!isTemplate && owner.scheduleNeedsRecalculation ? '<span class="result-state">スケジュールの再計算が必要です</span>' : ""}</div><div class="process-actions">${controls}</div></header><div class="process-summary"><span><strong>${steps.length}</strong> 工程</span><span>作業 <strong>${duration(steps.reduce((sum, step) => sum + step.workDurationMinutes, 0))}</strong></span><span>待機 <strong>${duration(steps.reduce((sum, step) => sum + step.waitDurationMinutes, 0))}</strong></span>${!isTemplate ? `<span>目標 <strong>${escapeHtml(targetText)}</strong></span>` : ""}</div>${steps.length ? '<p class="display-order-note">↑↓は表示順だけを変更します。実施順序を変える場合は鉛筆ボタンで先行工程を編集してください。</p>' : ""}<div class="step-flow">${steps.length ? steps.map((step, index) => stepCard(step, steps, index)).join("") : '<div class="no-steps">工程はまだありません。</div>'}</div><button class="add-step-button" data-action="add-step">＋ 工程を追加</button></article>`;
   }
   function stepCard(step, siblings, index) {
     const predecessors = (step.predecessorIds || []).map((id) => siblings.find((item) => item.id === id)?.name).filter(Boolean);
@@ -360,13 +360,43 @@
     } catch (error) { showFormError($("applyAlert"), error.message); }
   }
 
+  function updateAppendTemplateSummary() {
+    const plan = data.plans.find((item) => item.id === $("appendPlanId").value), template = data.templates.find((item) => item.id === $("appendTemplateId").value), stepCount = template ? ownerSteps("template", template.id).length : 0;
+    $("appendTemplatePlanName").textContent = plan?.name || "—"; $("appendTemplateName").textContent = template?.name || "—"; $("appendTemplateStepCount").textContent = `${stepCount}工程`;
+    $("appendTemplateSubmit").disabled = !plan || !template || stepCount === 0;
+  }
+  function openAppendTemplateDialog(planId) {
+    if (!data.templates.length) { showToast("工程テンプレートを先に作成してください"); return; }
+    $("appendTemplateAlert").hidden = true;
+    $("appendPlanId").innerHTML = data.plans.map((plan) => `<option value="${escapeHtml(plan.id)}">${escapeHtml(plan.name)}</option>`).join("");
+    $("appendTemplateId").innerHTML = data.templates.map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}</option>`).join("");
+    $("appendPlanId").value = planId; updateAppendTemplateSummary(); elements.appendTemplateDialog.showModal();
+  }
+  function appendTemplateToPlan(templateId, planId) {
+    try {
+      const created = C.appendTemplateToPlan(data, templateId, planId), plan = data.plans.find((item) => item.id === planId);
+      data.steps.push(...created.steps); plan.templateApplications = [...(plan.templateApplications || []), created.application]; plan.scheduleNeedsRecalculation = true; plan.updatedAt = new Date().toISOString();
+      if (elements.appendTemplateDialog.open) elements.appendTemplateDialog.close(); saveData(`${created.steps.length}工程を実験計画へ追加しました`); switchView("plans");
+    } catch (error) { if (!elements.appendTemplateDialog.open) elements.appendTemplateDialog.showModal(); showFormError($("appendTemplateAlert"), error.message); }
+  }
+  function submitAppendTemplate(event) {
+    event.preventDefault(); const templateId = $("appendTemplateId").value, planId = $("appendPlanId").value;
+    if (!templateId || !planId) return showFormError($("appendTemplateAlert"), "テンプレートと実験計画を選択してください。");
+    if (C.hasTemplateBeenApplied(data, planId, templateId)) {
+      elements.appendTemplateDialog.close();
+      askConfirm("テンプレートをもう一度追加しますか？", "このテンプレートは既に適用されています。もう一度追加しますか？", () => appendTemplateToPlan(templateId, planId), "もう一度追加");
+      return;
+    }
+    appendTemplateToPlan(templateId, planId);
+  }
+
   function deleteIdea(id) {
     const idea = data.experimentIdeas.find((item) => item.id === id); if (!idea) return; const related = data.plans.filter((plan) => plan.experimentIdeaId === id);
     askConfirm("実験を削除しますか？", `「${idea.name}」を削除します。${related.length ? `関連する計画 ${related.length}件は実験との参照が失われます。` : "関連する計画はありません。"}`, () => { data.experimentIdeas = data.experimentIdeas.filter((item) => item.id !== id); saveData("実験を削除しました"); });
   }
   function deleteOwner(type, id) {
     if (type === "template") {
-      const owner = data.templates.find((item) => item.id === id), planCount = data.plans.filter((plan) => plan.sourceTemplateId === id).length;
+      const owner = data.templates.find((item) => item.id === id), planCount = data.plans.filter((plan) => C.hasTemplateBeenApplied(data, plan.id, id)).length;
       askConfirm("テンプレートを削除しますか？", `「${owner.name}」とテンプレート工程を削除します。作成済み計画 ${planCount}件の独立した工程は保持されます。`, () => { data.templates = data.templates.filter((item) => item.id !== id); data.steps = data.steps.filter((step) => !(step.ownerType === "template" && step.ownerId === id)); saveData("テンプレートを削除しました"); });
     } else {
       const owner = data.plans.find((item) => item.id === id);
@@ -403,6 +433,7 @@
     if (action === "move-step-up") moveStep(type, ownerId, step.id, -1);
     if (action === "move-step-down") moveStep(type, ownerId, step.id, 1);
     if (action === "apply") openApplyDialog(ownerId);
+    if (action === "add-template") openAppendTemplateDialog(ownerId);
   }
   function downstreamSteps(step) { const siblings = ownerSteps(step.ownerType, step.ownerId), found = new Set(), queue = [step.id]; while (queue.length) { const id = queue.shift(); siblings.filter((item) => (item.predecessorIds || []).includes(id) && !found.has(item.id)).forEach((item) => { found.add(item.id); queue.push(item.id); }); } return siblings.filter((item) => found.has(item.id)); }
   function openProgress(step) { $("progressStepId").value = step.id; $("progressStatus").value = step.status || "未着手"; $("remainingWorkMinutes").value = step.remainingWorkMinutes ?? step.workDurationMinutes; $("actualStartedAt").value = C.isoToZonedInput(step.actualStartedAt, data.availability.timeZone); $("actualEndedAt").value = C.isoToZonedInput(step.actualEndedAt, data.availability.timeZone); $("actualWorkMinutes").value = step.actualWorkMinutes ?? ""; const affected = downstreamSteps(step), impact = $("progressImpact"); impact.hidden = !affected.length; impact.innerHTML = affected.length ? `<strong>後続への影響</strong>${affected.length}工程（${affected.map((item) => escapeHtml(item.name)).join("、")}）を次回の最適化で再計算します。既存の確定結果は上書きしません。` : ""; $("progressDialog").showModal(); }
@@ -428,7 +459,8 @@
   [elements.search, elements.filter, elements.sort].forEach((node) => node.addEventListener("input", renderIdeas));
   elements.ideaList.addEventListener("click", (event) => { const card = event.target.closest("[data-id]"); if (!card) return; if (event.target.closest(".edit-button")) openIdeaForm(data.experimentIdeas.find((x) => x.id === card.dataset.id)); if (event.target.closest(".delete-button")) deleteIdea(card.dataset.id); });
   $("addTemplateButton").addEventListener("click", () => openTemplateForm()); $("emptyTemplateButton").addEventListener("click", () => openTemplateForm()); elements.templateForm.addEventListener("submit", submitTemplate);
-  elements.templateList.addEventListener("click", handleOwnerAction); elements.planList.addEventListener("click", handleOwnerAction); elements.stepForm.addEventListener("submit", submitStep); elements.applyForm.addEventListener("submit", submitApply);
+  elements.templateList.addEventListener("click", handleOwnerAction); elements.planList.addEventListener("click", handleOwnerAction); elements.stepForm.addEventListener("submit", submitStep); elements.applyForm.addEventListener("submit", submitApply); elements.appendTemplateForm.addEventListener("submit", submitAppendTemplate);
+  [$("appendPlanId"), $("appendTemplateId")].forEach((node) => node.addEventListener("change", updateAppendTemplateSummary));
   $("progressForm").addEventListener("submit", submitProgress);
   $("addEquipmentButton").addEventListener("click", () => addEquipmentRow()); $("equipmentRows").addEventListener("click", (event) => { if (event.target.closest(".remove-equipment")) event.target.closest(".equipment-row").remove(); }); $("labDuringWait").addEventListener("change", updateWaitCheck);
   document.querySelectorAll(".dialog-close, .dialog-cancel").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close())); $("closeDialog").addEventListener("click", () => elements.ideaDialog.close()); $("cancelButton").addEventListener("click", () => elements.ideaDialog.close());

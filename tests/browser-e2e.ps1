@@ -89,7 +89,8 @@ try {
   localStorage.setItem(ExperimentCore.STORAGE_KEY, JSON.stringify(legacy));
   return true;
 })()
-'@)
+'@
+  )
   [void](Invoke-Cdp 'Page.reload' @{ ignoreCache = $true })
   if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Migration reload timed out.' }
   $migration = Invoke-Js "(() => {const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY));const b=JSON.parse(localStorage.getItem(ExperimentCore.migrationBackupKey(2)));return {version:d.schemaVersion,count:d.experimentIdeas.length,name:d.experimentIdeas[0].name,backupVersion:b.schemaVersion,backupCount:b.experimentIdeas.length,profiles:d.availability.profiles.length};})()"
@@ -597,6 +598,63 @@ try {
 })()
 "@
   Add-Result 'Display order reload persistence' ($orderPersistence.persisted -and $orderPersistence.orders.Count -ge 2) 'Retained saved displayOrder values and rendered order after page reload'
+
+  [void](Invoke-Js @'
+(() => {
+  const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),source=d.templates[0],sourceSteps=ExperimentCore.orderedOwnerSteps(d.steps,'template',source.id),templateId='template_extra_application',idMap=new Map(sourceSteps.map((step,index)=>[step.id,`template_extra_step_${index}`]));
+  d.templates.push({id:templateId,name:'Additional template',description:'Multiple template application test',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+  sourceSteps.forEach((step,index)=>d.steps.push({...JSON.parse(JSON.stringify(step)),id:idMap.get(step.id),ownerType:'template',ownerId:templateId,sourceTemplateId:null,sourceTemplateStepId:null,templateApplicationId:null,name:`Additional ${index+1}`,displayOrder:index,predecessorIds:(step.predecessorIds||[]).map(id=>idMap.get(id)),createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()}));
+  localStorage.setItem(ExperimentCore.STORAGE_KEY,JSON.stringify(d));return true;
+})()
+'@
+  )
+  [void](Invoke-Cdp 'Page.reload' @{ ignoreCache = $true })
+  if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Multiple-template setup reload timed out.' }
+
+  $multipleTemplate = Invoke-Js @'
+(() => {
+  document.querySelector('[data-view="plans"]').click();
+  const before=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),plan=before.plans[0],beforeSteps=ExperimentCore.orderedOwnerSteps(before.steps,'plan',plan.id),beforeIds=beforeSteps.map(x=>x.id),card=document.querySelector(`[data-owner-type="plan"][data-owner-id="${plan.id}"]`);
+  card.querySelector('[data-action="add-template"]').click();document.getElementById('appendTemplateId').value='template_extra_application';document.getElementById('appendTemplateId').dispatchEvent(new Event('change',{bubbles:true}));
+  const summary={plan:document.getElementById('appendTemplatePlanName').textContent,template:document.getElementById('appendTemplateName').textContent,count:document.getElementById('appendTemplateStepCount').textContent,target:document.getElementById('appendPlanId').value};
+  document.getElementById('appendTemplateForm').requestSubmit();
+  const after=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),afterPlan=after.plans.find(x=>x.id===plan.id),afterSteps=ExperimentCore.orderedOwnerSteps(after.steps,'plan',plan.id),added=afterSteps.filter(x=>x.sourceTemplateId==='template_extra_application'),addedIds=new Set(added.map(x=>x.id));
+  const dependencyInternal=added.every(x=>(x.predecessorIds||[]).every(id=>addedIds.has(id))),existingPreserved=beforeIds.every((id,index)=>afterSteps[index]?.id===id),newIds=added.every(x=>!beforeIds.includes(x.id));
+  return {planId:plan.id,beforeIds,summaryValid:summary.target===plan.id&&summary.template==='Additional template'&&summary.count.includes('2'),addedIds:added.map(x=>x.id),addedNames:added.map(x=>x.name),existingPreserved,newIds,appendedAtEnd:afterSteps.slice(-added.length).every((x,index)=>x.id===added[index].id),sourceOrder:added.map(x=>x.sourceTemplateStepId).join(','),templateOrder:ExperimentCore.orderedOwnerSteps(after.steps,'template','template_extra_application').map(x=>x.id).join(','),reorderControls:added.every(x=>document.querySelector(`[data-step-id="${x.id}"] [data-action="move-step-up"]`)&&document.querySelector(`[data-step-id="${x.id}"] [data-action="move-step-down"]`)),dependencyInternal,noExistingDependency:added.every(x=>(x.predecessorIds||[]).every(id=>!beforeIds.includes(id))),stale:afterPlan.scheduleNeedsRecalculation===true,staleVisible:document.querySelector(`[data-owner-type="plan"][data-owner-id="${plan.id}"] .result-state`)?.textContent.includes('\u30b9\u30b1\u30b8\u30e5\u30fc\u30eb\u306e\u518d\u8a08\u7b97\u304c\u5fc5\u8981\u3067\u3059'),applicationCount:(afterPlan.templateApplications||[]).filter(x=>x.templateId==='template_extra_application').length};
+})()
+'@
+  Add-Result 'Append another template to existing plan' ($multipleTemplate.addedIds.Count -eq 2 -and $multipleTemplate.summaryValid) 'Selected a template and existing target plan with a visible step count before appending'
+  Add-Result 'Preserve existing plan steps on append' ($multipleTemplate.existingPreserved -and $multipleTemplate.newIds -and $multipleTemplate.appendedAtEnd) 'Preserved all existing steps and appended newly identified steps at the end'
+  Add-Result 'Preserve appended template order' ($multipleTemplate.sourceOrder -eq $multipleTemplate.templateOrder -and $multipleTemplate.reorderControls) 'Inherited the template display order and exposed the existing up/down controls for appended plan steps'
+  Add-Result 'Regenerate appended dependencies' ($multipleTemplate.dependencyInternal -and $multipleTemplate.noExistingDependency) 'Remapped only template-internal predecessors and created no automatic dependency on existing steps'
+  Add-Result 'Require schedule recalculation after append' ($multipleTemplate.stale -and $multipleTemplate.staleVisible) 'Marked the plan and displayed that schedule recalculation is required'
+
+  $multipleTemplatePlanId = $multipleTemplate.planId
+  $appendIndependence = Invoke-Js @"
+(() => { const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),source=d.steps.find(x=>x.ownerType==='template'&&x.ownerId==='template_extra_application'); document.querySelector('[data-view="templates"]').click(); document.querySelector('[data-step-id="'+source.id+'"] [data-action="edit-step"]').click(); document.getElementById('stepName').value='Changed template source'; document.getElementById('stepForm').requestSubmit(); const after=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),copies=after.steps.filter(x=>x.ownerType==='plan'&&x.ownerId==='$multipleTemplatePlanId'&&x.sourceTemplateId==='template_extra_application'); return {copyNames:copies.map(x=>x.name),sourceName:after.steps.find(x=>x.id===source.id).name}; })()
+"@
+  Add-Result 'Appended plan independence' ($appendIndependence.sourceName -eq 'Changed template source' -and ($appendIndependence.copyNames -join ',') -eq ($multipleTemplate.addedNames -join ',')) 'Editing the source template did not change already appended plan steps'
+
+  $duplicateTemplate = Invoke-Js @'
+(() => {
+  document.querySelector('[data-view="plans"]').click();const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),plan=d.plans[0],card=document.querySelector(`[data-owner-type="plan"][data-owner-id="${plan.id}"]`);card.querySelector('[data-action="add-template"]').click();document.getElementById('appendTemplateId').value='template_extra_application';document.getElementById('appendTemplateId').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('appendTemplateForm').requestSubmit();
+  return {open:document.getElementById('confirmDialog').open,messageValid:document.getElementById('confirmMessage').textContent==='\u3053\u306e\u30c6\u30f3\u30d7\u30ec\u30fc\u30c8\u306f\u65e2\u306b\u9069\u7528\u3055\u308c\u3066\u3044\u307e\u3059\u3002\u3082\u3046\u4e00\u5ea6\u8ffd\u52a0\u3057\u307e\u3059\u304b\uff1f'};
+})()
+'@
+  Add-Result 'Confirm repeated template application' ($duplicateTemplate.open -and $duplicateTemplate.messageValid) 'Displayed the required confirmation before applying the same template again'
+  [void](Invoke-Js 'document.querySelector("#confirmDialog button[value=''confirm'']").click(); true')
+  $duplicateApplied = Invoke-Js @'
+(() => {const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),plan=d.plans[0],steps=d.steps.filter(x=>x.ownerType==='plan'&&x.ownerId===plan.id&&x.sourceTemplateId==='template_extra_application'),applications=(plan.templateApplications||[]).filter(x=>x.templateId==='template_extra_application');return {count:steps.length,unique:new Set(steps.map(x=>x.id)).size===steps.length,applications:applications.length,applicationIdsUnique:new Set(applications.map(x=>x.id)).size===applications.length};})()
+'@
+  Add-Result 'Repeat template with unique IDs' ($duplicateApplied.count -eq 4 -and $duplicateApplied.unique -and $duplicateApplied.applications -eq 2 -and $duplicateApplied.applicationIdsUnique) 'Applied the same template twice with unique step and application IDs'
+
+  [void](Invoke-Cdp 'Page.reload' @{ ignoreCache = $true })
+  if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Multiple-template persistence reload timed out.' }
+  $multipleTemplatePersistence = Invoke-Js @'
+(() => {const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),plan=d.plans[0],steps=d.steps.filter(x=>x.ownerType==='plan'&&x.ownerId===plan.id&&x.sourceTemplateId==='template_extra_application'),parsed=ExperimentCore.parseBackup(ExperimentCore.serializeData(d)),restored=parsed.valid?parsed.data.steps.filter(x=>x.ownerType==='plan'&&x.ownerId===plan.id&&x.sourceTemplateId==='template_extra_application'):[];return {steps:steps.length,applications:(plan.templateApplications||[]).filter(x=>x.templateId==='template_extra_application').length,backupValid:parsed.valid,restoredSteps:restored.length};})()
+'@
+  Add-Result 'Multiple-template reload persistence' ($multipleTemplatePersistence.steps -eq 4 -and $multipleTemplatePersistence.applications -eq 2) 'Retained all appended steps and application history after page reload'
+  Add-Result 'Multiple-template backup restore' ($multipleTemplatePersistence.backupValid -and $multipleTemplatePersistence.restoredSteps -eq 4) 'Preserved appended templates through JSON serialization and restore validation'
 
   $results | Format-Table -AutoSize | Out-String -Width 240 | Write-Output
   Write-Output "ALL_TESTS_PASSED=$($results.Count)"
