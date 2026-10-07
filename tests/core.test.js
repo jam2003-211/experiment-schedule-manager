@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const core = require("../core.js");
+const optimizer = require("../optimizer.js");
 
 function step(id, work, wait = 0, type = "calendar", predecessors = [], lab = {}) {
   return { id, ownerType: "plan", ownerId: "p", name: id, workDurationMinutes: work, waitDurationMinutes: wait, waitDurationType: type, predecessorIds: predecessors, labRequirement: { start: !!lab.start, end: !!lab.end, waitCheck: !!lab.waitCheck }, waitCheckIntervalMinutes: lab.interval || 0, equipmentRequirements: [], notes: "", status: "未着手" };
@@ -199,4 +200,88 @@ test("追加工程は元テンプレートと独立しJSON復元後も保持さ�
   parsed = core.parseBackup(core.serializeData(parsed.data));
   assert.equal(parsed.valid, true);
   assert.equal(parsed.data.steps.filter((item) => item.ownerType === "plan" && item.ownerId === plan.id && item.sourceTemplateId === "t2").length, 2);
+});
+
+function rollingStep(id, predecessors, startAt, endAt, overrides = {}) {
+  return { ...step(id, 60, 0, "calendar", predecessors), displayOrder: id.charCodeAt(0), assignedWorkerId: "worker_default", waitCheckWorkerId: "worker_default", waitCheckDurationMinutes: 0, waitCheckRequiresLab: false, workLocation: "lab", interruptible: true, remainingWorkMinutes: 60, actualSegments: [], plannedStartAt: startAt, plannedEndAt: endAt, plannedStartDateTime: startAt, plannedEndDateTime: endAt, actualStartedAt: null, actualEndedAt: null, actualStartDateTime: null, actualEndDateTime: null, completed: false, ...overrides };
+}
+
+function rollingData() {
+  const data = core.createEmptyData(), aStart = "2030-01-07T00:00:00.000Z", aEnd = "2030-01-07T06:00:00.000Z", bStart = "2030-01-07T06:00:00.000Z", bEnd = "2030-01-07T07:00:00.000Z", cStart = "2030-01-09T00:00:00.000Z", cEnd = "2030-01-09T01:00:00.000Z";
+  data.experimentIdeas = [{ id: "i", name: "Idea", priority: "中", status: "実施中", desiredCompletionDate: "2030-01-10", purpose: "", materials: "", plannedEquipment: "", notes: "" }];
+  data.plans = [{ id: "p", name: "Rolling", experimentIdeaId: "i", sourceTemplateId: "t", targetCompletionDateTime: "2030-01-10T09:00:00.000Z", activeScheduleVersionId: "schedule_original", createdAt: "2030-01-01T00:00:00.000Z", updatedAt: "2030-01-01T00:00:00.000Z" }];
+  data.steps = [rollingStep("a", [], aStart, aEnd), rollingStep("b", ["a"], bStart, bEnd), rollingStep("c", [], cStart, cEnd)];
+  data.scheduleVersions = [{ id: "schedule_original", planId: "p", calculatedAt: "2030-01-01T00:00:00.000Z", targetCompletionDateTime: data.plans[0].targetCompletionDateTime, requiredStartAt: aStart, timeZone: "Asia/Tokyo", availabilitySnapshot: JSON.parse(JSON.stringify(data.availability)), feasible: true, warnings: [], errors: [], labVisitDates: [], stepSchedules: data.steps.map((item) => ({ stepId: item.id, stepName: item.name, startAt: item.plannedStartDateTime, endAt: item.plannedEndDateTime, workStartAt: item.plannedStartDateTime, workEndAt: item.plannedEndDateTime, waitStartAt: null, waitEndAt: null, workSegments: [{ startAt: item.plannedStartDateTime, endAt: item.plannedEndDateTime, durationMinutes: 60 }], waitSegments: [], labVisits: [] })) }];
+  return data;
+}
+
+function completeRollingStep(data, endAt) {
+  const item = data.steps.find((entry) => entry.id === "a"); item.status = "完了"; item.remainingWorkMinutes = 0; core.assignProgressFields(item, { completed: true, actualStartDateTime: item.plannedStartDateTime, actualEndDateTime: endAt }); return item;
+}
+
+test("工程完了チェックをcompletedとして保存できる", () => {
+  const data = rollingData(), item = completeRollingStep(data, "2030-01-07T01:00:00.000Z");
+  assert.equal(item.completed, true); assert.equal(item.status, "完了");
+});
+
+test("工程の実績終了日時を新旧互換フィールドへ保存できる", () => {
+  const item = completeRollingStep(rollingData(), "2030-01-07T01:00:00.000Z");
+  assert.equal(item.actualEndDateTime, "2030-01-07T01:00:00.000Z"); assert.equal(item.actualEndedAt, item.actualEndDateTime);
+});
+
+test("再読み込み後も完了状態を維持する", () => {
+  const data = rollingData(); completeRollingStep(data, "2030-01-07T01:00:00.000Z"); const restored = core.parseBackup(core.serializeData(data));
+  assert.equal(restored.valid, true); assert.equal(core.progressFields(restored.data.steps[0]).completed, true);
+});
+
+test("完了済み工程の予定日時はローリング再計算で動かない", () => {
+  const data = rollingData(), item = completeRollingStep(data, "2030-01-07T01:00:00.000Z"), before = [item.plannedStartDateTime, item.plannedEndDateTime];
+  const result = optimizer.recalculatePlanProgress(data, "p", "a", { nowIso: item.actualEndDateTime }); const fixed = result.stepSchedules.find((entry) => entry.stepId === "a");
+  assert.equal(result.feasible, true); assert.deepEqual([fixed.startAt, fixed.endAt], before); assert.equal(fixed.actualEndAt, item.actualEndDateTime);
+});
+
+test("予定より早い完了で後続工程を前倒しする", () => {
+  const data = rollingData(), item = completeRollingStep(data, "2030-01-07T01:00:00.000Z"), oldStart = data.steps[1].plannedStartDateTime;
+  const result = optimizer.recalculatePlanProgress(data, "p", "a", { nowIso: item.actualEndDateTime }), next = result.stepSchedules.find((entry) => entry.stepId === "b");
+  assert.equal(result.feasible, true); assert.ok(new Date(next.startAt) < new Date(oldStart)); assert.ok(new Date(next.startAt) >= new Date(item.actualEndDateTime));
+});
+
+test("予定より遅い完了で後続工程を後ろへ移動する", () => {
+  const data = rollingData(), item = completeRollingStep(data, "2030-01-08T01:00:00.000Z"), oldStart = data.steps[1].plannedStartDateTime;
+  const result = optimizer.recalculatePlanProgress(data, "p", "a", { nowIso: item.actualEndDateTime }), next = result.stepSchedules.find((entry) => entry.stepId === "b");
+  assert.equal(result.feasible, true); assert.ok(new Date(next.startAt) > new Date(oldStart));
+});
+
+test("完成希望日時を超える場合に予想完成と遅延警告を返す", () => {
+  const data = rollingData(), item = completeRollingStep(data, "2030-01-10T08:30:00.000Z");
+  const result = optimizer.recalculatePlanProgress(data, "p", "a", { nowIso: item.actualEndDateTime });
+  assert.equal(result.late, true); assert.ok(result.delayMinutes > 0); assert.ok(result.forecastCompletionAt); assert.ok(result.warnings.includes("現在の進捗では完成希望日時に間に合わない可能性があります"));
+});
+
+test("依存関係のない工程はローリング再計算で変更しない", () => {
+  const data = rollingData(), item = completeRollingStep(data, "2030-01-07T01:00:00.000Z"), unrelated = data.steps.find((entry) => entry.id === "c"), before = [unrelated.plannedStartDateTime, unrelated.plannedEndDateTime];
+  const result = optimizer.recalculatePlanProgress(data, "p", "a", { nowIso: item.actualEndDateTime }), fixed = result.stepSchedules.find((entry) => entry.stepId === "c");
+  assert.deepEqual(result.affectedStepIds, ["b"]); assert.deepEqual([fixed.startAt, fixed.endAt], before); assert.equal(fixed.recalculated, false);
+});
+
+test("再計算後も作業者と装置の競合を防止する", () => {
+  const data = rollingData(); data.equipment = [{ id: "device", name: "Device", capacity: 1, unavailablePeriods: [] }]; data.steps.filter((item) => ["b", "c"].includes(item.id)).forEach((item) => { item.equipmentRequirements = [{ equipmentId: "device", equipmentName: "Device", occupancyMinutes: 60, occupancyStartOffsetMinutes: 0, occupancyEndOffsetMinutes: 60, requiresContinuousMonitoring: false }]; });
+  const c = data.steps.find((item) => item.id === "c"); core.assignProgressFields(c, { plannedStartDateTime: "2030-01-07T01:00:00.000Z", plannedEndDateTime: "2030-01-07T02:00:00.000Z" }); const oldC = data.scheduleVersions[0].stepSchedules.find((item) => item.stepId === "c"); Object.assign(oldC, { startAt: c.plannedStartDateTime, endAt: c.plannedEndDateTime, workStartAt: c.plannedStartDateTime, workEndAt: c.plannedEndDateTime, workSegments: [{ startAt: c.plannedStartDateTime, endAt: c.plannedEndDateTime, durationMinutes: 60 }] });
+  const completed = completeRollingStep(data, "2030-01-07T01:00:00.000Z"), result = optimizer.recalculatePlanProgress(data, "p", "a", { nowIso: completed.actualEndDateTime }), next = result.stepSchedules.find((item) => item.stepId === "b");
+  assert.equal(result.feasible, true); assert.ok(new Date(next.startAt) >= new Date(c.plannedEndDateTime));
+});
+
+test("JSONバックアップ復元で進捗状態とローリング履歴を保持する", () => {
+  const data = rollingData(), completed = completeRollingStep(data, "2030-01-07T01:00:00.000Z"), result = optimizer.recalculatePlanProgress(data, "p", "a", { nowIso: completed.actualEndDateTime }); data.scheduleVersions.push(result); data.plans[0].activeScheduleVersionId = result.id;
+  const restored = core.parseBackup(core.serializeData(data)); assert.equal(restored.valid, true); assert.equal(core.progressFields(restored.data.steps[0]).completed, true); assert.equal(restored.data.scheduleVersions.at(-1).kind, "rolling");
+});
+
+test("依存関係より前の手動予定開始日時を拒否する", () => {
+  const data = rollingData(), completed = completeRollingStep(data, "2030-01-08T01:00:00.000Z"), next = data.steps.find((item) => item.id === "b"); next.manualStartAt = "2030-01-07T00:00:00.000Z";
+  const result = optimizer.recalculatePlanProgress(data, "p", "b", { nowIso: completed.actualEndDateTime, rejectLate: true }); assert.equal(result.feasible, false); assert.match(result.errors[0], /先行工程|基準日時/);
+});
+
+test("更新後予定に再計算前日時と表示用区分を保持する", () => {
+  const data = rollingData(), completed = completeRollingStep(data, "2030-01-07T01:00:00.000Z"), result = optimizer.recalculatePlanProgress(data, "p", "a", { nowIso: completed.actualEndDateTime }), next = result.stepSchedules.find((item) => item.stepId === "b");
+  assert.equal(next.recalculated, true); assert.equal(next.previousStartAt, "2030-01-07T06:00:00.000Z"); assert.notEqual(next.startAt, next.previousStartAt); assert.ok(Array.isArray(next.labVisits));
 });

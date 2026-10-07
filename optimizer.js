@@ -71,7 +71,7 @@
     const { data, workerReservations, equipmentReservations, granularity } = context;
     const worker = data.workers.find((item) => item.id === step.assignedWorkerId && item.active !== false); if (!worker) return { error: `工程「${step.name}」の担当作業者が見つかりません。`, proven: true };
     const location = step.workLocation || "lab", profile = workerProfile(data, worker, location); if (!profile) return { error: `工程「${step.name}」の${location === "lab" ? "研究室" : "自宅"}作業時間がありません。`, proven: true };
-    const remaining = step.status === "実施中" ? Number(step.remainingWorkMinutes ?? step.workDurationMinutes) : Number(step.workDurationMinutes);
+    const progress = C.progressFields(step), remaining = step.status === "実施中" ? Number(step.remainingWorkMinutes ?? step.workDurationMinutes) : Number(step.workDurationMinutes);
     const fixedStart = step.manualStartAt || null, searchStart = fixedStart || preferredAt || earliestAt, maxTries = fixedStart ? 1 : Math.max(1, Math.ceil((ms(deadlineAt) - ms(searchStart)) / (granularity * 60000)));
     if (fixedStart && ms(fixedStart) < ms(earliestAt)) return { error: `工程「${step.name}」の手動開始日時が、先行工程の完了または再計算基準日時より前です。`, proven: true };
     if (fixedStart && remaining > 0) {
@@ -152,7 +152,7 @@
       monitoring.forEach((item) => labEvents.push({ at: item.startAt, kind: "monitoring" }));
       const labProfile = workerProfile(data, worker, "lab");
       if (labEvents.some((event) => attendanceType(data, C.dateKeyInZone(event.at, data.availability.timeZone)) === "cannotVisit" || !labProfile || !C.isWorkingInstant(event.at, data.availability, labProfile.id))) continue;
-      return { placement: { stepId: step.id, planId: step.ownerId, stepName: step.name, startAt: step.status === "実施中" && step.actualStartedAt ? step.actualStartedAt : workStartAt, scheduledWorkStartAt: workStartAt, workEndAt, waitStartAt: workEndAt, endAt: stepEndAt, workSegments, waitSegments, equipmentReservations: equipment, workerReservations: workSegments.map((segment) => ({ resourceId: worker.id, workerId: worker.id, ...segment, stepId: step.id, kind: "work" })).concat(monitoring, checks), labEvents, manual: !!fixedStart } };
+      return { placement: { stepId: step.id, planId: step.ownerId, stepName: step.name, startAt: step.status === "実施中" && progress.actualStartDateTime ? progress.actualStartDateTime : workStartAt, scheduledWorkStartAt: workStartAt, workEndAt, waitStartAt: workEndAt, endAt: stepEndAt, workSegments, waitSegments, equipmentReservations: equipment, workerReservations: workSegments.map((segment) => ({ resourceId: worker.id, workerId: worker.id, ...segment, stepId: step.id, kind: "work" })).concat(monitoring, checks), labEvents, manual: !!fixedStart } };
     }
     return { error: fixedStart ? `工程「${step.name}」の手動開始日時では制約を満たせません。` : `工程「${step.name}」を期限内の空き時間へ配置できませんでした。`, proven: !!fixedStart };
   }
@@ -170,11 +170,11 @@
     const byId = new Map(steps.map((step) => [step.id, step])), successor = new Map(steps.map((step) => [step.id, []]));
     steps.forEach((step) => (step.predecessorIds || []).forEach((id) => successor.get(id)?.push(step.id)));
     const scheduled = new Map(), workerReservations = [], equipmentReservations = [], labDays = new Set(), errors = [];
-    for (const step of steps.filter((item) => item.status === "完了")) {
-      if (!step.actualStartedAt || !step.actualEndedAt) return { feasible: false, resolution: "provenInfeasible", errors: [`完了工程「${step.name}」の実績日時がありません。`] };
-      scheduled.set(step.id, { stepId: step.id, planId: step.ownerId, stepName: step.name, startAt: step.actualStartedAt, workEndAt: step.actualEndedAt, waitStartAt: step.actualEndedAt, endAt: step.actualEndedAt, workSegments: step.actualSegments || [], waitSegments: [], equipmentReservations: [], workerReservations: [], labEvents: [], fixed: true });
+    for (const step of steps.filter((item) => C.progressFields(item).completed)) {
+      const progress = C.progressFields(step); if (!progress.actualStartDateTime || !progress.actualEndDateTime) return { feasible: false, resolution: "provenInfeasible", errors: [`完了工程「${step.name}」の実績日時がありません。`] };
+      scheduled.set(step.id, { stepId: step.id, planId: step.ownerId, stepName: step.name, startAt: progress.actualStartDateTime, workEndAt: progress.actualEndDateTime, waitStartAt: progress.actualEndDateTime, endAt: progress.actualEndDateTime, workSegments: step.actualSegments || [], waitSegments: [], equipmentReservations: [], workerReservations: [], labEvents: [], fixed: true });
     }
-    const unscheduled = new Set(steps.filter((step) => step.status !== "完了").map((step) => step.id)), context = { data, workerReservations, equipmentReservations, granularity, searchDeadline: options.searchDeadline };
+    const unscheduled = new Set(steps.filter((step) => !C.progressFields(step).completed).map((step) => step.id)), context = { data, workerReservations, equipmentReservations, granularity, searchDeadline: options.searchDeadline };
     while (unscheduled.size) {
       if (options.searchDeadline && Date.now() > options.searchDeadline) return { feasible: false, resolution: "searchLimit", errors: ["探索時間の上限に達しました。"], alternatives: ["探索時間を延長する", "対象実験を分けて計算する"] };
       const ready = [...unscheduled].map((id) => byId.get(id)).filter((step) => (step.predecessorIds || []).every((id) => scheduled.has(id)));
@@ -202,6 +202,75 @@
     if (planResults.some((item) => !item.meetsDeadline)) return { feasible: false, resolution: "provenInfeasible", errors: planResults.filter((item) => !item.meetsDeadline).map((item) => `「${item.planName}」が完成予定日時を超過します。`) };
     const preferOffDates = [...labDays].filter((day) => attendanceType(data, day) === "preferOff"), completionTimes = planResults.map((item) => ms(item.completionAt));
     return { feasible: true, resolution: "feasible", stepSchedules: [...scheduled.values()], workerReservations, equipmentReservations, labVisitDates: [...labDays].sort(), preferOffVisitDates: preferOffDates.sort(), planResults, metrics: { makespan: iso(Math.max(...completionTimes)), completionTimeSum: completionTimes.reduce((sum, value) => sum + value, 0), labVisitDays: labDays.size, preferOffVisitDays: preferOffDates.length } };
+  }
+
+  function recalculatePlanProgress(data, planId, changedStepId, options) {
+    const settings = { granularityMinutes: 15, rejectLate: false, ...(options || {}) }, plan = data.plans.find((item) => item.id === planId);
+    const steps = C.orderedOwnerSteps(data.steps, "plan", planId), changed = steps.find((item) => item.id === changedStepId), errors = [];
+    const versionBase = { id: C.makeId("schedule"), planId, kind: "rolling", calculatedAt: new Date().toISOString(), timeZone: data.availability.timeZone, availabilitySnapshot: clone(data.availability), targetCompletionDateTime: plan?.targetCompletionDateTime || null, previousScheduleVersionId: plan?.activeScheduleVersionId || null, changedStepId, affectedStepIds: [], stepSchedules: [], labVisitDates: [], warnings: [], errors };
+    if (!plan || !changed) return { ...versionBase, feasible: false, errors: ["対象の実験計画または工程が見つかりません。"] };
+    if (!Number.isFinite(ms(plan.targetCompletionDateTime))) return { ...versionBase, feasible: false, errors: ["完成希望日時が正しくありません。"] };
+    const graph = C.validateDependencyGraph(steps); if (!graph.valid) return { ...versionBase, feasible: false, errors: graph.errors };
+
+    const byId = new Map(steps.map((step) => [step.id, step])), successors = new Map(steps.map((step) => [step.id, []]));
+    steps.forEach((step) => (step.predecessorIds || []).forEach((id) => successors.get(id)?.push(step.id)));
+    const affected = new Set(), queue = C.progressFields(changed).completed ? [...(successors.get(changed.id) || [])] : [changed.id];
+    while (queue.length) { const id = queue.shift(); if (affected.has(id)) continue; affected.add(id); (successors.get(id) || []).forEach((next) => queue.push(next)); }
+    [...affected].forEach((id) => { if (C.progressFields(byId.get(id)).completed) affected.delete(id); });
+    versionBase.affectedStepIds = [...affected];
+
+    const previousVersion = data.scheduleVersions.find((item) => item.id === plan.activeScheduleVersionId) || null;
+    const previousById = new Map((previousVersion?.stepSchedules || []).map((item) => [item.stepId, item]));
+    const scheduled = new Map(), workerReservations = [], equipmentReservations = [], labDays = new Set();
+    const fixedPlacement = (step, completed) => {
+      const progress = C.progressFields(step), previous = previousById.get(step.id), startAt = completed ? progress.actualStartDateTime : (progress.plannedStartDateTime || previous?.startAt), endAt = completed ? progress.actualEndDateTime : (progress.plannedEndDateTime || previous?.endAt);
+      if (!startAt || !endAt) return null;
+      const placement = { ...(previous || {}), stepId: step.id, planId, stepName: step.name, startAt, scheduledWorkStartAt: previous?.scheduledWorkStartAt || previous?.workStartAt || startAt, workEndAt: completed ? endAt : (previous?.workEndAt || endAt), waitStartAt: previous?.waitStartAt || null, waitEndAt: previous?.waitEndAt || null, endAt, workSegments: completed ? (step.actualSegments || []) : (previous?.workSegments || []), waitSegments: completed ? [] : (previous?.waitSegments || []), equipmentReservations: [], workerReservations: [], labEvents: [], fixed: true, completed };
+      if (!placement.workSegments.length && ms(placement.workEndAt) > ms(placement.scheduledWorkStartAt)) placement.workSegments = [{ startAt: placement.scheduledWorkStartAt, endAt: placement.workEndAt, durationMinutes: Math.max(0, Math.round((ms(placement.workEndAt) - ms(placement.scheduledWorkStartAt)) / 60000)) }];
+      placement.workerReservations = placement.workSegments.map((segment) => ({ resourceId: step.assignedWorkerId, workerId: step.assignedWorkerId, stepId: step.id, kind: completed ? "actual" : "fixed", ...segment }));
+      const base = placement.scheduledWorkStartAt;
+      placement.equipmentReservations = (step.equipmentRequirements || []).map((requirement) => ({ resourceId: requirement.equipmentId, equipmentId: requirement.equipmentId, stepId: step.id, startAt: iso(ms(base) + Number(requirement.occupancyStartOffsetMinutes || 0) * 60000), endAt: iso(ms(base) + Number(requirement.occupancyEndOffsetMinutes ?? requirement.occupancyMinutes) * 60000), fixed: true }));
+      return placement;
+    };
+
+    for (const step of steps) {
+      const progress = C.progressFields(step), completed = progress.completed;
+      if (!completed && affected.has(step.id)) continue;
+      const placement = fixedPlacement(step, completed);
+      if (!placement) {
+        if ((successors.get(step.id) || []).some((id) => affected.has(id))) errors.push(`工程「${step.name}」の現在の予定日時がないため、後続工程を再計算できません。`);
+        continue;
+      }
+      scheduled.set(step.id, placement); workerReservations.push(...placement.workerReservations); equipmentReservations.push(...placement.equipmentReservations);
+    }
+    if (errors.length) return { ...versionBase, feasible: false, errors };
+
+    const changedProgress = C.progressFields(changed), referenceAt = settings.nowIso || changedProgress.actualEndDateTime || new Date().toISOString();
+    const targetMs = ms(plan.targetCompletionDateTime), referenceMs = ms(referenceAt), horizonAt = iso(Math.max(targetMs, referenceMs) + 366 * 86400000);
+    const unscheduled = new Set(affected), context = { data, workerReservations, equipmentReservations, granularity: settings.granularityMinutes, searchDeadline: Date.now() + (settings.maxMilliseconds || 10000) };
+    while (unscheduled.size) {
+      const ready = [...unscheduled].map((id) => byId.get(id)).filter((step) => (step.predecessorIds || []).every((id) => scheduled.has(id)));
+      if (!ready.length) return { ...versionBase, feasible: false, errors: ["影響を受ける後続工程の依存関係を解決できません。"] };
+      ready.sort((a, b) => (a.displayOrder ?? steps.indexOf(a)) - (b.displayOrder ?? steps.indexOf(b)));
+      const step = ready[0], predecessorEnds = (step.predecessorIds || []).map((id) => scheduled.get(id)?.endAt).filter(Boolean), earliestDependency = predecessorEnds.sort().at(-1);
+      const earliestAt = earliestDependency && ms(earliestDependency) > referenceMs ? earliestDependency : referenceAt;
+      const candidate = candidatePlacement(context, step, earliestAt, horizonAt, step.manualStartAt || null);
+      if (!candidate.placement) return { ...versionBase, feasible: false, errors: [candidate.error] };
+      const placement = candidate.placement; scheduled.set(step.id, placement); unscheduled.delete(step.id); workerReservations.push(...placement.workerReservations); equipmentReservations.push(...placement.equipmentReservations); placement.labEvents.forEach((event) => labDays.add(C.dateKeyInZone(event.at, data.availability.timeZone)));
+    }
+
+    const finalSchedules = steps.map((step) => {
+      const progress = C.progressFields(step), previous = previousById.get(step.id), placement = scheduled.get(step.id), recalculated = affected.has(step.id);
+      const plannedStart = recalculated ? placement?.startAt : (progress.plannedStartDateTime || previous?.startAt || placement?.startAt), plannedEnd = recalculated ? placement?.endAt : (progress.plannedEndDateTime || previous?.endAt || placement?.endAt);
+      const labVisits = (placement?.labEvents || previous?.labVisits || []).map((event) => ({ ...event, available: event.available !== false, label: event.label || `${step.name} ${event.kind || "来室"}` }));
+      return { ...(previous || {}), ...(placement || {}), stepId: step.id, planId, stepName: step.name, startAt: plannedStart || progress.actualStartDateTime, endAt: plannedEnd || progress.actualEndDateTime, plannedStartAt: plannedStart || null, plannedEndAt: plannedEnd || null, actualStartAt: progress.actualStartDateTime, actualEndAt: progress.actualEndDateTime, completed: progress.completed, status: progress.completed ? "完了" : (step.status || "未着手"), workSegments: progress.completed && previous?.workSegments?.length ? previous.workSegments : (placement?.workSegments || previous?.workSegments || []), previousStartAt: previous?.startAt || progress.plannedStartDateTime || null, previousEndAt: previous?.endAt || progress.plannedEndDateTime || null, recalculated, labVisits };
+    }).filter((item) => item.startAt && item.endAt);
+    const completionTimes = finalSchedules.map((item) => item.actualEndAt && item.completed ? ms(item.actualEndAt) : ms(item.endAt)).filter(Number.isFinite), forecastCompletionAt = completionTimes.length ? iso(Math.max(...completionTimes)) : null;
+    const delayMinutes = forecastCompletionAt ? Math.max(0, Math.ceil((ms(forecastCompletionAt) - targetMs) / 60000)) : 0, late = delayMinutes > 0;
+    if (late) versionBase.warnings.push("現在の進捗では完成希望日時に間に合わない可能性があります");
+    if (late && settings.rejectLate) return { ...versionBase, feasible: false, late, forecastCompletionAt, delayMinutes, affectedStepIds: [...affected], errors: ["指定した予定開始日時では完成希望日時に間に合いません。"] };
+    const allVisits = finalSchedules.flatMap((item) => item.labVisits || []), visitDates = new Set([...labDays]); allVisits.forEach((visit) => visitDates.add(C.dateKeyInZone(visit.at, data.availability.timeZone)));
+    return { ...versionBase, feasible: true, resolution: "feasible", stepSchedules: finalSchedules, workerReservations, equipmentReservations, labVisitDates: [...visitDates].filter(Boolean).sort(), requiredStartAt: finalSchedules.map((item) => item.startAt).sort()[0] || null, forecastCompletionAt, delayMinutes, late, affectedStepNames: [...affected].map((id) => byId.get(id)?.name).filter(Boolean) };
   }
 
   function validateResult(data, result) {
@@ -239,5 +308,5 @@
     return { run, results };
   }
 
-  return { optimize, validateResult, scheduleWithStrategy };
+  return { optimize, validateResult, scheduleWithStrategy, recalculatePlanProgress };
 });

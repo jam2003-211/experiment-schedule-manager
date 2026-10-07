@@ -31,6 +31,25 @@
   const normalizeText = (value) => typeof value === "string" ? value.trim() : "";
   const finiteNumber = (value) => { const number = Number(value); return Number.isFinite(number) ? number : NaN; };
 
+  function progressFields(step) {
+    const has = (key) => !!step && Object.prototype.hasOwnProperty.call(step, key);
+    const plannedStartDateTime = has("plannedStartDateTime") ? step.plannedStartDateTime : (step?.plannedStartAt || null);
+    const plannedEndDateTime = has("plannedEndDateTime") ? step.plannedEndDateTime : (step?.plannedEndAt || null);
+    const actualStartDateTime = has("actualStartDateTime") ? step.actualStartDateTime : (step?.actualStartedAt || null);
+    const actualEndDateTime = has("actualEndDateTime") ? step.actualEndDateTime : (step?.actualEndedAt || null);
+    const completed = step?.completed === true || step?.status === "完了";
+    return { plannedStartDateTime, plannedEndDateTime, actualStartDateTime, actualEndDateTime, completed };
+  }
+  function assignProgressFields(step, values) {
+    const current = progressFields({ ...step, ...(values || {}) });
+    step.plannedStartDateTime = current.plannedStartDateTime; step.plannedEndDateTime = current.plannedEndDateTime;
+    step.actualStartDateTime = current.actualStartDateTime; step.actualEndDateTime = current.actualEndDateTime; step.completed = current.completed;
+    step.plannedStartAt = current.plannedStartDateTime; step.plannedEndAt = current.plannedEndDateTime;
+    step.actualStartedAt = current.actualStartDateTime; step.actualEndedAt = current.actualEndDateTime;
+    if (current.completed) step.status = "完了";
+    return step;
+  }
+
   function splitWaitDurationMinutes(value) {
     const totalMinutes = finiteNumber(value);
     if (!Number.isInteger(totalMinutes) || totalMinutes < 0) return { days: 0, hours: 0, minutes: 0 };
@@ -107,13 +126,16 @@
       assignedWorkerId: input.assignedWorkerId || existing?.assignedWorkerId || "worker_default",
       workLocation: input.workLocation || existing?.workLocation || "lab",
       interruptible: input.interruptible !== false,
-      manualStartAt: input.manualStartAt || existing?.manualStartAt || null, plannedStartAt: existing?.plannedStartAt || null, plannedEndAt: existing?.plannedEndAt || null,
+      manualStartAt: input.manualStartAt || existing?.manualStartAt || null, plannedStartAt: progressFields(existing).plannedStartDateTime, plannedEndAt: progressFields(existing).plannedEndDateTime,
+      plannedStartDateTime: progressFields(existing).plannedStartDateTime, plannedEndDateTime: progressFields(existing).plannedEndDateTime,
       equipmentRequirements: (input.equipmentRequirements || []).map((item) => {
         const occupancy = finiteNumber(item.occupancyMinutes);
         return { equipmentId: normalizeText(item.equipmentId), equipmentName: normalizeText(item.equipmentName), occupancyMinutes: occupancy, occupancyStartOffsetMinutes: finiteNumber(item.occupancyStartOffsetMinutes || 0), occupancyEndOffsetMinutes: finiteNumber(item.occupancyEndOffsetMinutes ?? occupancy), requiresContinuousMonitoring: !!item.requiresContinuousMonitoring };
       }),
       notes: normalizeText(input.notes), displayOrder: Number.isInteger(existing?.displayOrder) ? existing.displayOrder : null, createdAt: existing?.createdAt || now, updatedAt: now,
-      actualWorkMinutes: existing?.actualWorkMinutes ?? null, actualStartedAt: existing?.actualStartedAt ?? null, actualEndedAt: existing?.actualEndedAt ?? null, actualSegments: existing?.actualSegments || [], remainingWorkMinutes: existing?.remainingWorkMinutes ?? finiteNumber(input.workDurationMinutes), progressUpdatedAt: existing?.progressUpdatedAt || null, status: existing?.status || "未着手"
+      actualWorkMinutes: existing?.actualWorkMinutes ?? null, actualStartedAt: progressFields(existing).actualStartDateTime, actualEndedAt: progressFields(existing).actualEndDateTime,
+      actualStartDateTime: progressFields(existing).actualStartDateTime, actualEndDateTime: progressFields(existing).actualEndDateTime, completed: progressFields(existing).completed,
+      actualSegments: existing?.actualSegments || [], remainingWorkMinutes: existing?.remainingWorkMinutes ?? finiteNumber(input.workDurationMinutes), progressUpdatedAt: existing?.progressUpdatedAt || null, status: existing?.status || "未着手"
     };
   }
 
@@ -161,7 +183,7 @@
     return sourceSteps.map((step, index) => ({
       ...deepClone(step), id: idMap.get(step.id), ownerType: "plan", ownerId: planId, sourceTemplateId: templateId, sourceTemplateStepId: step.id, templateApplicationId: applicationId,
       displayOrder: startingDisplayOrder + index, predecessorIds: (step.predecessorIds || []).map((id) => idMap.get(id)), createdAt: now, updatedAt: now,
-      actualWorkMinutes: null, actualStartedAt: null, actualEndedAt: null, actualSegments: [], remainingWorkMinutes: step.workDurationMinutes, progressUpdatedAt: null, status: "未着手", plannedStartAt: null, plannedEndAt: null
+      actualWorkMinutes: null, actualStartedAt: null, actualEndedAt: null, actualStartDateTime: null, actualEndDateTime: null, completed: false, actualSegments: [], remainingWorkMinutes: step.workDurationMinutes, progressUpdatedAt: null, status: "未着手", plannedStartAt: null, plannedEndAt: null, plannedStartDateTime: null, plannedEndDateTime: null
     }));
   }
 
@@ -386,7 +408,7 @@
       if (!migrated.workers.length) migrated.workers = [{ id: "worker_default", name: "既定の作業者", labAvailabilityProfileId: "profile_lab", homeAvailabilityProfileId: "profile_home", unavailablePeriods: [], active: true }];
       migrated.templates = (candidate.templates || []).map((item) => ({ ...item, description: item.description || "" })); migrated.updatedAt = nowIso();
       migrated.plans = (candidate.plans || []).map((plan) => ({ ...plan, targetCompletionDateTime: plan.targetCompletionDateTime || (plan.targetCompletionDate ? zonedLocalToIso(`${plan.targetCompletionDate}T18:00`, migrated.availability.timeZone) : ""), activeScheduleVersionId: plan.activeScheduleVersionId || null }));
-      migrated.steps = (candidate.steps || []).map((step) => ({ ...step, assignedWorkerId: step.assignedWorkerId || "worker_default", workLocation: step.workLocation || "lab", interruptible: step.interruptible !== false, manualStartAt: step.manualStartAt || null, waitCheckDurationMinutes: step.labRequirement?.waitCheck ? (step.waitCheckDurationMinutes || 5) : 0, waitCheckWorkerId: step.waitCheckWorkerId || "worker_default", waitCheckRequiresLab: step.labRequirement?.waitCheck ? step.waitCheckRequiresLab !== false : false, actualSegments: step.actualSegments || [], remainingWorkMinutes: step.remainingWorkMinutes ?? step.workDurationMinutes, progressUpdatedAt: step.progressUpdatedAt || null, equipmentRequirements: (step.equipmentRequirements || []).map((requirement) => ({ ...requirement, occupancyStartOffsetMinutes: requirement.occupancyStartOffsetMinutes || 0, occupancyEndOffsetMinutes: requirement.occupancyEndOffsetMinutes ?? requirement.occupancyMinutes, requiresContinuousMonitoring: !!requirement.requiresContinuousMonitoring })) }));
+      migrated.steps = (candidate.steps || []).map((step) => { const progress = progressFields(step); return ({ ...step, assignedWorkerId: step.assignedWorkerId || "worker_default", workLocation: step.workLocation || "lab", interruptible: step.interruptible !== false, manualStartAt: step.manualStartAt || null, plannedStartAt: progress.plannedStartDateTime, plannedEndAt: progress.plannedEndDateTime, plannedStartDateTime: progress.plannedStartDateTime, plannedEndDateTime: progress.plannedEndDateTime, actualStartedAt: progress.actualStartDateTime, actualEndedAt: progress.actualEndDateTime, actualStartDateTime: progress.actualStartDateTime, actualEndDateTime: progress.actualEndDateTime, completed: progress.completed, waitCheckDurationMinutes: step.labRequirement?.waitCheck ? (step.waitCheckDurationMinutes || 5) : 0, waitCheckWorkerId: step.waitCheckWorkerId || "worker_default", waitCheckRequiresLab: step.labRequirement?.waitCheck ? step.waitCheckRequiresLab !== false : false, actualSegments: step.actualSegments || [], remainingWorkMinutes: step.remainingWorkMinutes ?? step.workDurationMinutes, progressUpdatedAt: step.progressUpdatedAt || null, equipmentRequirements: (step.equipmentRequirements || []).map((requirement) => ({ ...requirement, occupancyStartOffsetMinutes: requirement.occupancyStartOffsetMinutes || 0, occupancyEndOffsetMinutes: requirement.occupancyEndOffsetMinutes ?? requirement.occupancyMinutes, requiresContinuousMonitoring: !!requirement.requiresContinuousMonitoring })) }); });
       migrated.equipment = (candidate.equipment || []).map((item) => ({ ...item, capacity: item.capacity || 1, unavailablePeriods: item.unavailablePeriods || [] }));
       migrated.attendancePreferences = candidate.attendancePreferences || []; migrated.optimizationRuns = candidate.optimizationRuns || []; migrated.optimizationResults = candidate.optimizationResults || []; migrated.confirmedOptimizationResultId = candidate.confirmedOptimizationResultId || null;
       const validation = validateData(migrated);
@@ -438,8 +460,9 @@
         if (!Array.isArray(step.predecessorIds)) errors.push(`工程 ${index + 1}: 先行工程IDは配列である必要があります。`);
         if (step.displayOrder !== undefined && step.displayOrder !== null && (!Number.isInteger(step.displayOrder) || step.displayOrder < 0)) errors.push(`工程 ${index + 1}: 表示順は0以上の整数である必要があります。`);
         if (!Array.isArray(step.equipmentRequirements)) errors.push(`工程 ${index + 1}: 使用装置は配列である必要があります。`); else step.equipmentRequirements.forEach((requirement) => { if (!equipmentIds.has(requirement.equipmentId)) errors.push(`工程 ${index + 1}: 使用装置「${requirement.equipmentId || "未設定"}」が見つかりません。`); });
-        for (const [label, value] of [["手動開始日時", step.manualStartAt], ["実績開始日時", step.actualStartedAt], ["実績終了日時", step.actualEndedAt], ["進捗更新日時", step.progressUpdatedAt], ["予定開始日時", step.plannedStartAt], ["予定終了日時", step.plannedEndAt]]) if (!optionalIso(value)) errors.push(`工程 ${index + 1}: ${label}が正しくありません。`);
-        if (step.actualStartedAt && step.actualEndedAt && new Date(step.actualEndedAt) < new Date(step.actualStartedAt)) errors.push(`工程 ${index + 1}: 実績終了日時が開始日時より前です。`);
+        for (const [label, value] of [["手動開始日時", step.manualStartAt], ["実績開始日時", step.actualStartedAt], ["実績終了日時", step.actualEndedAt], ["実績開始日時", step.actualStartDateTime], ["実績終了日時", step.actualEndDateTime], ["進捗更新日時", step.progressUpdatedAt], ["予定開始日時", step.plannedStartAt], ["予定終了日時", step.plannedEndAt], ["予定開始日時", step.plannedStartDateTime], ["予定終了日時", step.plannedEndDateTime]]) if (!optionalIso(value)) errors.push(`工程 ${index + 1}: ${label}が正しくありません。`);
+        const progress = progressFields(step); if (step.completed !== undefined && typeof step.completed !== "boolean") errors.push(`工程 ${index + 1}: 完了状態が正しくありません。`);
+        if (progress.actualStartDateTime && progress.actualEndDateTime && new Date(progress.actualEndDateTime) < new Date(progress.actualStartDateTime)) errors.push(`工程 ${index + 1}: 実績終了日時が開始日時より前です。`);
         const key = `${step.ownerType}:${step.ownerId}`; if (!ownerGroups.has(key)) ownerGroups.set(key, []); ownerGroups.get(key).push(step);
       });
       ownerGroups.forEach((steps) => {
@@ -462,5 +485,5 @@
     return validation.valid ? { valid: true, data: migration.data, migrated: migration.migrated, errors: [] } : { valid: false, errors: validation.errors };
   }
 
-  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, splitWaitDurationMinutes, combineWaitDurationParts, validateIdea, sanitizeIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, validateDependencyGraph, orderedOwnerSteps, moveOwnerStepDisplayOrder, movePlanStepDisplayOrder, hasTemplateBeenApplied, appendTemplateToPlan, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, migrateData, validateData, hydrateData, serializeData, parseBackup };
+  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, progressFields, assignProgressFields, splitWaitDurationMinutes, combineWaitDurationParts, validateIdea, sanitizeIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, validateDependencyGraph, orderedOwnerSteps, moveOwnerStepDisplayOrder, movePlanStepDisplayOrder, hasTemplateBeenApplied, appendTemplateToPlan, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, migrateData, validateData, hydrateData, serializeData, parseBackup };
 });

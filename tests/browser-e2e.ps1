@@ -656,6 +656,67 @@ try {
   Add-Result 'Multiple-template reload persistence' ($multipleTemplatePersistence.steps -eq 4 -and $multipleTemplatePersistence.applications -eq 2) 'Retained all appended steps and application history after page reload'
   Add-Result 'Multiple-template backup restore' ($multipleTemplatePersistence.backupValid -and $multipleTemplatePersistence.restoredSteps -eq 4) 'Preserved appended templates through JSON serialization and restore validation'
 
+  [void](Invoke-Js @'
+(() => {
+  const d=ExperimentCore.createEmptyData(),now=new Date().toISOString(),planId='rolling_plan',deviceId='rolling_device';
+  d.experimentIdeas=[{id:'rolling_idea',name:'Rolling progress experiment',purpose:'',materials:'',plannedEquipment:'',priority:'\u4e2d',desiredCompletionDate:'2031-06-05',notes:'',status:'\u5b9f\u65bd\u4e2d',createdAt:now,updatedAt:now}];
+  d.equipment=[{id:deviceId,name:'Rolling device',capacity:1,unavailablePeriods:[]}];
+  d.plans=[{id:planId,name:'Rolling progress plan',experimentIdeaId:'rolling_idea',sourceTemplateId:'rolling_template',targetCompletionDate:'2031-06-05',targetCompletionDateTime:'2031-06-05T09:00:00.000Z',activeScheduleVersionId:'rolling_original',status:'draft',createdAt:now,updatedAt:now}];
+  const mk=(id,name,preds,start,end,equipment=[])=>({id,ownerType:'plan',ownerId:planId,name,workDurationMinutes:60,waitDurationMinutes:0,waitDurationType:'calendar',predecessorIds:preds,labRequirement:{start:false,end:false,waitCheck:false},waitCheckIntervalMinutes:0,waitCheckDurationMinutes:0,waitCheckWorkerId:'worker_default',waitCheckRequiresLab:false,assignedWorkerId:'worker_default',workLocation:'lab',interruptible:true,manualStartAt:null,plannedStartAt:start,plannedEndAt:end,plannedStartDateTime:start,plannedEndDateTime:end,equipmentRequirements:equipment,notes:'',displayOrder:id==='rolling_a'?0:id==='rolling_b'?1:2,createdAt:now,updatedAt:now,actualWorkMinutes:null,actualStartedAt:null,actualEndedAt:null,actualStartDateTime:null,actualEndDateTime:null,completed:false,actualSegments:[],remainingWorkMinutes:60,progressUpdatedAt:null,status:'not-started'});
+  const req=[{equipmentId:deviceId,equipmentName:'Rolling device',occupancyMinutes:60,occupancyStartOffsetMinutes:0,occupancyEndOffsetMinutes:60,requiresContinuousMonitoring:false}];
+  d.steps=[mk('rolling_a','Step A',[],'2031-06-03T00:00:00.000Z','2031-06-03T06:00:00.000Z'),mk('rolling_b','Step B',['rolling_a'],'2031-06-03T06:00:00.000Z','2031-06-03T07:00:00.000Z',req),mk('rolling_c','Independent C',[],'2031-06-03T01:00:00.000Z','2031-06-03T02:00:00.000Z',req)];
+  d.scheduleVersions=[{id:'rolling_original',planId,calculatedAt:now,targetCompletionDateTime:d.plans[0].targetCompletionDateTime,requiredStartAt:d.steps[0].plannedStartDateTime,timeZone:'Asia/Tokyo',availabilitySnapshot:JSON.parse(JSON.stringify(d.availability)),feasible:true,warnings:[],errors:[],labVisitDates:[],stepSchedules:d.steps.map(s=>({stepId:s.id,stepName:s.name,startAt:s.plannedStartDateTime,endAt:s.plannedEndDateTime,workStartAt:s.plannedStartDateTime,workEndAt:s.plannedEndDateTime,waitStartAt:null,waitEndAt:null,workSegments:[{startAt:s.plannedStartDateTime,endAt:s.plannedEndDateTime,durationMinutes:60}],waitSegments:[],labVisits:[]}))}];
+  localStorage.setItem(ExperimentCore.STORAGE_KEY,JSON.stringify(d));return true;
+})()
+'@)
+  [void](Invoke-Cdp 'Page.reload' @{ ignoreCache = $true })
+  if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Rolling progress setup reload timed out.' }
+
+  $rollingUiBefore = Invoke-Js @'
+(() => {document.querySelector('[data-view="plans"]').click();const card=document.querySelector('[data-owner-id="rolling_plan"]'),rows=card.querySelectorAll('.step-row');return {progress:card.querySelector('.plan-progress')?.textContent,timing:rows[0].querySelectorAll('.step-timing dt').length,checkboxes:card.querySelectorAll('[data-action="complete-step"]').length};})()
+'@
+  [void](Invoke-Js @'
+(() => {const row=document.querySelector('[data-step-id="rolling_a"]');row.querySelector('[data-action="progress-step"]').click();document.getElementById('progressCompleted').checked=true;document.getElementById('progressCompleted').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('actualStartedAt').value='2031-06-03T09:00';document.getElementById('actualEndedAt').value='2031-06-03T10:00';document.getElementById('progressForm').requestSubmit();return true;})()
+'@)
+  $rollingEarly = Invoke-Js @'
+(() => {const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),a=d.steps.find(x=>x.id==='rolling_a'),b=d.steps.find(x=>x.id==='rolling_b'),c=d.steps.find(x=>x.id==='rolling_c'),plan=d.plans[0],card=document.querySelector('[data-owner-id="rolling_plan"]'),aRow=card.querySelector('[data-step-id="rolling_a"]');return {completed:a.completed,statusValid:a.status==='\u5b8c\u4e86',actualEnd:a.actualEndDateTime,legacyEnd:a.actualEndedAt,aPlannedStart:a.plannedStartDateTime,aPlannedEnd:a.plannedEndDateTime,bStart:b.plannedStartDateTime,cStart:c.plannedStartDateTime,cEnd:c.plannedEndDateTime,history:d.scheduleVersions.length,active:plan.activeScheduleVersionId,recalculated:d.scheduleVersions.at(-1).kind==='rolling',affected:d.scheduleVersions.at(-1).affectedStepIds.join(','),progress:card.querySelector('.plan-progress')?.textContent,completedClass:aRow.classList.contains('step-completed'),actualVisible:aRow.querySelector('.step-timing')?.textContent.includes('2031')};})()
+'@
+  Add-Result 'Rolling completion checkbox save' ($rollingEarly.completed -and $rollingEarly.statusValid -and $rollingUiBefore.checkboxes -eq 3) 'Saved the completion checkbox through the plan UI'
+  Add-Result 'Rolling actual end save' ($rollingEarly.actualEnd -eq '2031-06-03T01:00:00.000Z' -and $rollingEarly.legacyEnd -eq $rollingEarly.actualEnd) 'Saved the editable actual end in new and legacy-compatible fields'
+  Add-Result 'Rolling completed step fixation' ($rollingEarly.aPlannedStart -eq '2031-06-03T00:00:00.000Z' -and $rollingEarly.aPlannedEnd -eq '2031-06-03T06:00:00.000Z') 'Kept the completed step planned dates fixed during recalculation'
+  Add-Result 'Rolling early completion pull-forward' ($rollingEarly.bStart -lt '2031-06-03T06:00:00.000Z' -and $rollingEarly.bStart -ge '2031-06-03T02:00:00.000Z') 'Moved the dependent step earlier after early completion'
+  Add-Result 'Rolling unrelated branch unchanged' ($rollingEarly.cStart -eq '2031-06-03T01:00:00.000Z' -and $rollingEarly.cEnd -eq '2031-06-03T02:00:00.000Z' -and $rollingEarly.affected -eq 'rolling_b') 'Kept the independent branch unchanged'
+  Add-Result 'Rolling resource conflicts prevented' ($rollingEarly.bStart -ge $rollingEarly.cEnd) 'Placed the recalculated step after the fixed worker and equipment reservation'
+
+  $rollingVisual = Invoke-Js @'
+(() => {document.querySelector('[data-view="schedule"]').click();return {recalculatedCalendar:!!document.querySelector('.calendar-event.recalculated'),recalculatedGantt:!!document.querySelector('.gantt-bar.recalculated'),previousGantt:!!document.querySelector('.gantt-bar.previous'),completedGantt:!!document.querySelector('.gantt-bar.completed'),table:!!document.querySelector('.schedule-recalculated')};})()
+'@
+  Add-Result 'Rolling calendar and Gantt update' ($rollingVisual.recalculatedCalendar -and $rollingVisual.recalculatedGantt -and $rollingVisual.previousGantt -and $rollingVisual.completedGantt -and $rollingVisual.table) 'Rendered recalculated, prior, actual/completed schedule states in the schedule views'
+
+  [void](Invoke-Js @'
+(() => {document.querySelector('[data-view="plans"]').click();document.querySelector('[data-step-id="rolling_a"] [data-action="progress-step"]').click();document.getElementById('actualEndedAt').value='2031-06-06T10:00';document.getElementById('progressForm').requestSubmit();return true;})()
+'@)
+  $rollingLate = Invoke-Js @'
+(() => {const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),plan=d.plans[0],b=d.steps.find(x=>x.id==='rolling_b'),card=document.querySelector('[data-owner-id="rolling_plan"]');return {bStart:b.plannedStartDateTime,late:plan.progressForecast?.late,forecast:plan.progressForecast?.forecastCompletionAt,delay:plan.progressForecast?.delayMinutes,warning:card.textContent.includes('\u73fe\u5728\u306e\u9032\u6357\u3067\u306f\u5b8c\u6210\u5e0c\u671b\u65e5\u6642\u306b\u9593\u306b\u5408\u308f\u306a\u3044\u53ef\u80fd\u6027\u304c\u3042\u308a\u307e\u3059'),affected:plan.progressForecast?.affectedStepNames};})()
+'@
+  Add-Result 'Rolling delayed completion push-back' ($rollingLate.bStart -gt $rollingEarly.bStart) 'Moved the dependent step later after delayed completion'
+  Add-Result 'Rolling deadline warning' ($rollingLate.late -and $rollingLate.forecast -and $rollingLate.delay -gt 0 -and $rollingLate.warning -and $rollingLate.affected.Count -ge 1) 'Displayed the required warning, forecast completion, delay, and affected steps'
+
+  $manualBefore = Invoke-Js "JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)).steps.find(x=>x.id==='rolling_b').manualStartAt"
+  $manualInvalid = Invoke-Js @'
+(() => {document.querySelector('[data-step-id="rolling_b"] [data-action="progress-step"]').click();document.getElementById('plannedStartDateTime').value='2031-06-05T12:00';document.getElementById('progressForm').requestSubmit();const saved=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)).steps.find(x=>x.id==='rolling_b').manualStartAt;return {dialog:document.getElementById('progressDialog').open,error:document.getElementById('progressFormAlert').hidden===false,saved};})()
+'@
+  Add-Result 'Rolling invalid manual start rejection' ($manualInvalid.dialog -and $manualInvalid.error -and $manualInvalid.saved -eq $manualBefore) 'Rejected a manual start before its completed predecessor without saving it'
+  [void](Invoke-Js "document.getElementById('progressDialog').close();true")
+
+  [void](Invoke-Cdp 'Page.reload' @{ ignoreCache = $true })
+  if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Rolling progress persistence reload timed out.' }
+  $rollingPersistence = Invoke-Js @'
+(() => {const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),a=d.steps.find(x=>x.id==='rolling_a'),parsed=ExperimentCore.parseBackup(ExperimentCore.serializeData(d)),restored=parsed.valid?parsed.data.steps.find(x=>x.id==='rolling_a'):null;return {completed:a.completed,end:a.actualEndDateTime,history:d.scheduleVersions.length,backupValid:parsed.valid,restoredCompleted:restored?.completed,restoredEnd:restored?.actualEndDateTime,rollingHistory:parsed.valid&&parsed.data.scheduleVersions.some(x=>x.kind==='rolling')};})()
+'@
+  Add-Result 'Rolling reload persistence' ($rollingPersistence.completed -and $rollingPersistence.end -eq '2031-06-06T01:00:00.000Z' -and $rollingPersistence.history -ge 3) 'Retained completion, actual end, and schedule history after reload'
+  Add-Result 'Rolling JSON backup restore' ($rollingPersistence.backupValid -and $rollingPersistence.restoredCompleted -and $rollingPersistence.restoredEnd -eq $rollingPersistence.end -and $rollingPersistence.rollingHistory) 'Preserved progress fields and rolling schedule history through JSON backup restore'
+
   $results | Format-Table -AutoSize | Out-String -Width 240 | Write-Output
   Write-Output "ALL_TESTS_PASSED=$($results.Count)"
 }
