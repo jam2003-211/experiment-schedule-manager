@@ -27,7 +27,7 @@ function Wait-ForServer([string]$Url, [int]$TimeoutSeconds = 10) {
 
 try {
   New-Item -ItemType Directory -Path $publishedRoot -Force | Out-Null
-  @('index.html', 'styles.css', 'core.js', 'optimizer.js', 'app.js', 'optimizer-worker.js', '.nojekyll') |
+  @('index.html', 'styles.css', 'core.js', 'app.js', '.nojekyll') |
     ForEach-Object { Copy-Item -LiteralPath (Join-Path $projectRoot $_) -Destination $publishedRoot }
 
   $serverOut = Join-Path $temporaryRoot 'server.out.log'
@@ -44,23 +44,14 @@ try {
   Assert-True ($indexResponse.StatusCode -eq 200) 'index.html was not served from the repository subpath.'
   Assert-True ($indexResponse.Content -notmatch '(?:src|href)=["'']/') 'index.html contains a root-absolute asset path.'
 
-  $assetPaths = @('styles.css', 'core.js', 'optimizer.js', 'app.js', 'optimizer-worker.js')
+  $assetPaths = @('styles.css', 'core.js', 'app.js')
   foreach ($assetPath in $assetPaths) {
     $resolvedUrl = [Uri]::new([Uri]$baseUrl, $assetPath).AbsoluteUri
     $response = Invoke-WebRequest -UseBasicParsing $resolvedUrl
     Assert-True ($response.StatusCode -eq 200) "$assetPath was not served from the repository subpath."
   }
 
-  $appSource = [IO.File]::ReadAllText((Join-Path $publishedRoot 'app.js'))
-  Assert-True ($appSource -match 'new\s+Worker\(["'']optimizer-worker\.js["'']\)') 'The application Worker URL is not relative.'
-
-  $workerSource = [IO.File]::ReadAllText((Join-Path $publishedRoot 'optimizer-worker.js'))
-  Assert-True ($workerSource -match 'importScripts\(["'']core\.js["''],\s*["'']optimizer\.js["'']\)') 'Worker dependencies are not relative.'
-  foreach ($workerDependency in @('core.js', 'optimizer.js')) {
-    $dependencyUrl = [Uri]::new([Uri]($baseUrl + 'optimizer-worker.js'), $workerDependency).AbsoluteUri
-    $response = Invoke-WebRequest -UseBasicParsing $dependencyUrl
-    Assert-True ($response.StatusCode -eq 200) "Worker dependency $workerDependency did not resolve from the subpath."
-  }
+  Assert-True ($indexResponse.Content -notmatch 'optimizer(?:-worker)?\.js') 'Removed optimizer assets are still referenced by index.html.'
 
   Write-Output "PAGES_SUBPATH_SMOKE_PASSED=True"
   Write-Output "PAGES_SUBPATH_URL=$baseUrl"

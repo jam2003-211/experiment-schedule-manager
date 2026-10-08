@@ -20,13 +20,11 @@
         <button class="nav-item" data-view="plans"><span>◇</span> 実験計画</button>
         <button class="nav-item" data-view="availability"><span>◷</span> 作業可能時間</button>
         <button class="nav-item" data-view="schedule"><span>▤</span> スケジュール</button>
-        <button class="nav-item" data-view="resources"><span>⚙</span> 作業者・装置</button>
-        <button class="nav-item" data-view="optimization"><span>◆</span> 複数実験の最適化</button>
         <button class="nav-item" data-view="data"><span>⇅</span> データ管理</button>
       </nav>
       <div class="future-menu">
-        <p>次の開発段階</p>
-        <span>装置競合の解消</span><span>登校日数の最適化</span><span>進捗・実績分析</span>
+        <p>基本の流れ</p>
+        <span>工程を順番に並べる</span><span>予定を作成する</span><span>完了時に後続を更新する</span>
       </div>
       <div class="local-badge"><span></span> ローカル保存のみ</div>
     </aside>
@@ -62,7 +60,7 @@
       </section>
 
       <section id="templatesView" class="view">
-        <div class="section-heading"><div><h2>再利用する工程セット</h2><p>作業と待機を分け、依存関係・装置占有・来室条件を登録します。</p></div><button class="primary" id="addTemplateButton">＋ テンプレートを作成</button></div>
+        <div class="section-heading"><div><h2>再利用する工程セット</h2><p>上から実施する順に、作業時間と待機時間を登録します。</p></div><button class="primary" id="addTemplateButton">＋ テンプレートを作成</button></div>
         <div id="templateList" class="template-list"></div>
         <div id="templateEmpty" class="empty-state card" hidden><div class="empty-icon">☷</div><h2>工程テンプレートはまだありません</h2><p>繰り返し使う実験工程を登録しましょう。</p><button class="primary" id="emptyTemplateButton">最初のテンプレートを作成</button></div>
       </section>
@@ -74,13 +72,13 @@
       </section>
 
       <section id="availabilityView" class="view">
-        <div class="section-heading"><div><h2>作業可能時間</h2><p>場所別プロファイルを設定します。タイムゾーン: <strong id="availabilityTimeZone">Asia/Tokyo</strong></p></div><div class="heading-actions"><select id="availabilityProfileSelect"></select><button class="primary" id="saveAvailabilityButton">設定を保存</button></div></div>
+        <div class="section-heading"><div><h2>作業可能時間</h2><p>工程計算に使う時間帯を設定します。タイムゾーン: <strong id="availabilityTimeZone">Asia/Tokyo</strong></p></div><div class="heading-actions"><button class="primary" id="saveAvailabilityButton">設定を保存</button></div></div>
         <article class="card settings-card"><h2>曜日ごとの作業時間</h2><p>作業時間と「作業可能時間として数える待機」に使用します。</p><div id="weeklyRows" class="weekly-rows"></div></article>
         <div class="settings-grid">
           <article class="card settings-card"><h2>休日</h2><p>外部APIは使わず、必要な休日を手動登録します。</p><form id="holidayForm" class="inline-form"><input id="holidayDate" type="date" required><input id="holidayName" maxlength="50" placeholder="名称（任意）"><button class="secondary" type="submit">追加</button></form><div id="holidayList" class="setting-list"></div></article>
           <article class="card settings-card"><h2>日付別の例外</h2><p>特定日を作業可能または作業不可にします。</p><form id="exceptionForm" class="exception-form"><input type="hidden" id="exceptionId"><label><span>日付</span><input id="exceptionDate" type="date" required></label><label><span>区分</span><select id="exceptionType"><option value="available">作業可能</option><option value="unavailable">作業不可</option></select></label><label class="exception-time"><span>開始</span><input id="exceptionStart" type="time" value="09:00"></label><label class="exception-time"><span>終了</span><input id="exceptionEnd" type="time" value="18:00"></label><label><span>メモ</span><input id="exceptionLabel" maxlength="80"></label><button class="secondary" type="submit">保存</button></form><div id="exceptionList" class="setting-list"></div></article>
         </div>
-        <article class="card settings-card attendance-card"><h2>来室日の優先設定</h2><p>研究室に行けない日は必須制約、可能なら休みたい日は最適化時の優先条件です。</p><form id="attendanceForm" class="inline-form"><input id="attendanceDate" type="date" required><select id="attendanceType"><option value="normal">通常の作業可能日</option><option value="preferOff">可能なら休みたい日</option><option value="cannotVisit">研究室に行けない日</option></select><input id="attendanceNote" maxlength="80" placeholder="メモ"><button class="secondary" type="submit">保存</button></form><div id="attendanceList" class="setting-list"></div></article>
+        <article class="card settings-card attendance-card"><h2>来室日の設定</h2><p>研究室に行けない日は研究室作業の必須制約です。「可能なら休みたい日」は参考情報として表示します。</p><form id="attendanceForm" class="inline-form"><input id="attendanceDate" type="date" required><select id="attendanceType"><option value="normal">通常の作業可能日</option><option value="preferOff">可能なら休みたい日</option><option value="cannotVisit">研究室に行けない日</option></select><input id="attendanceNote" maxlength="80" placeholder="メモ"><button class="secondary" type="submit">保存</button></form><div id="attendanceList" class="setting-list"></div></article>
       </section>
 
       <section id="scheduleView" class="view">
@@ -88,22 +86,10 @@
         <div id="scheduleMessages"></div>
         <section id="scheduleResults" hidden>
           <div class="schedule-summary" id="scheduleSummary"></div>
-          <article class="card schedule-table-card"><h2>工程別スケジュール</h2><div class="table-scroll"><table class="schedule-table"><thead><tr><th>工程</th><th>予定開始</th><th>予定終了</th><th>実績開始／終了</th><th>状態</th></tr></thead><tbody id="scheduleTableBody"></tbody></table></div></article>
+          <article class="card schedule-table-card"><h2>工程別スケジュール</h2><div class="table-scroll"><table class="schedule-table"><thead><tr><th>工程</th><th>開始予定</th><th>終了予定</th><th>開始／終了</th><th>状態</th></tr></thead><tbody id="scheduleTableBody"></tbody></table></div></article>
           <article class="card calendar-card"><header><div><h2>月間カレンダー</h2><p>予定・実績・完了済み・再計算前の予定を区別して表示します。</p></div><div class="calendar-nav"><button class="ghost" id="calendarPrev">‹</button><button class="ghost" id="calendarToday">今日</button><strong id="calendarMonthLabel"></strong><button class="ghost" id="calendarNext">›</button></div></header><div class="calendar-weekdays"><span>日</span><span>月</span><span>火</span><span>水</span><span>木</span><span>金</span><span>土</span></div><div id="scheduleCalendar" class="schedule-calendar"></div></article>
           <article class="card gantt-card"><header><h2>ガントチャート</h2><p>緑は予定、青は実績、濃緑は完了、点線は再計算前の予定、黄は待機です。</p></header><div id="ganttChart" class="gantt-chart"></div></article>
         </section>
-      </section>
-
-      <section id="resourcesView" class="view">
-        <div class="settings-grid">
-          <article class="card settings-card"><h2>作業者</h2><p>工程と待機確認へ割り当てます。</p><form id="workerForm" class="inline-form"><input type="hidden" id="workerId"><input id="workerName" maxlength="80" placeholder="作業者名" required><button class="secondary" type="submit">追加</button></form><div id="workerList" class="setting-list"></div></article>
-          <article class="card settings-card"><h2>装置</h2><p>同時利用可能数と利用不可期間を管理します。</p><div id="resourceEquipmentList" class="setting-list"></div></article>
-        </div>
-      </section>
-
-      <section id="optimizationView" class="view">
-        <article class="card optimization-setup"><header><div><h2>複数実験の一括スケジューリング</h2><p>期限は必須条件です。生成結果は確定するまで既存計画へ反映されません。</p></div><span class="approx-badge">近似探索</span></header><div id="optimizationPlanOptions" class="optimization-plan-options"></div><div class="optimization-limits"><label><span>時刻粒度</span><select id="optimizationGranularity"><option value="15">15分</option><option value="30">30分</option></select></label><label><span>探索時間上限</span><select id="optimizationTimeLimit"><option value="10000">10秒</option><option value="5000">5秒</option><option value="20000">20秒</option></select></label><button class="primary" id="runOptimizationButton">2つのプランを作成</button><button class="ghost" id="cancelOptimizationButton" disabled>キャンセル</button></div></article>
-        <div id="optimizationStatus"></div><div id="optimizationComparison" class="optimization-comparison"></div>
       </section>
 
       <section id="dataView" class="view">
@@ -127,7 +113,6 @@
         <label><span>ステータス <em>必須</em></span><select id="status" name="status"><option>未計画</option><option>計画中</option><option>実施中</option><option>完了</option></select></label>
         <label class="full"><span>目的</span><textarea id="purpose" name="purpose" rows="3" placeholder="この実験で確認したいこと"></textarea></label>
         <label class="full"><span>材料</span><textarea id="materials" name="materials" rows="2" placeholder="試料、試薬など"></textarea></label>
-        <label><span>使用予定装置</span><input id="plannedEquipment" name="plannedEquipment" placeholder="例：遠心機、顕微鏡"></label>
         <label><span>希望完成日</span><input id="desiredCompletionDate" name="desiredCompletionDate" type="date"></label>
         <label class="full"><span>メモ</span><textarea id="notes" name="notes" rows="3"></textarea></label>
       </div>
@@ -154,16 +139,8 @@
         <label><span>作業時間（分） <em>必須</em></span><input id="workDurationMinutes" type="number" min="0" step="1" value="30"><small>人が作業する時間。待機中は別実験を進められます。</small></label>
         <fieldset class="wait-duration-field"><legend>待機時間</legend><div class="wait-duration-inputs"><label><span>日</span><input id="waitDurationDays" type="number" min="0" step="1" value="0"></label><label><span>時間</span><input id="waitDurationHours" type="number" min="0" max="23" step="1" value="0"></label><label><span>分</span><input id="waitDurationMinutesPart" type="number" min="0" max="59" step="1" value="0"></label></div><small>反応・培養など、人が拘束されない時間。</small></fieldset>
         <label><span>待機時間の数え方</span><select id="waitDurationType"><option value="calendar">暦時間（休日中も進む）</option><option value="working">作業可能時間のみ</option></select></label>
-        <label><span>担当作業者</span><select id="assignedWorkerId"></select></label>
-        <label><span>作業場所</span><select id="workLocation"><option value="lab">研究室</option><option value="home">自宅</option></select></label>
+        <label><span>作業場所</span><select id="workLocation"><option value="lab">研究室作業</option><option value="home">研究室外</option></select></label>
         <fieldset class="full"><legend>作業の中断</legend><div class="check-row"><label><input id="interruptible" type="checkbox" checked> 作業可能時間をまたいで中断・再開できる</label></div><p class="field-note">オフの場合、必要な作業時間を連続して確保できなければ実行不可能になります。</p></fieldset>
-        <fieldset class="full"><legend>研究室へ行く必要</legend><div class="check-row"><label><input id="labAtStart" type="checkbox"> 工程の開始時</label><label><input id="labAtEnd" type="checkbox"> 工程の終了時</label><label><input id="labDuringWait" type="checkbox"> 待機中の確認時</label></div></fieldset>
-        <label id="waitCheckField"><span>待機中の確認間隔（分）</span><input id="waitCheckIntervalMinutes" type="number" min="1" step="1" value="60"></label>
-        <label><span>1回の確認作業時間（分）</span><input id="waitCheckDurationMinutes" type="number" min="1" step="1" value="5"></label>
-        <label><span>確認担当者</span><select id="waitCheckWorkerId"></select></label>
-        <label class="check-field"><input id="waitCheckRequiresLab" type="checkbox" checked> 確認には来室が必要</label>
-        <fieldset class="full"><legend>先行工程</legend><div id="predecessorOptions" class="option-grid"><p class="muted">先行工程はありません。</p></div></fieldset>
-        <fieldset class="full"><legend>使用装置と占有時間</legend><div id="equipmentRows" class="equipment-rows"></div><button type="button" id="addEquipmentButton" class="secondary small-button">＋ 装置を追加</button><p class="field-note">開始位置・終了位置は工程の作業開始を0分とした半開区間［開始, 終了）です。作業終了後まで占有できます。同名装置は共通装置として管理されます。</p></fieldset>
         <label class="full"><span>メモ</span><textarea id="stepNotes" rows="3"></textarea></label>
       </div>
       <div class="dialog-actions"><button type="button" class="ghost dialog-cancel">キャンセル</button><button type="submit" class="primary">工程を保存</button></div>
@@ -189,13 +166,13 @@
   </dialog>
 
   <dialog id="progressDialog" class="compact-dialog">
-    <form id="progressForm"><div class="dialog-header"><div><p class="eyebrow">PROGRESS</p><h2>工程の進捗・予定</h2></div><button type="button" class="icon-button dialog-close" aria-label="閉じる">×</button></div><input type="hidden" id="progressStepId"><div id="progressImpact" class="schedule-alert warning" hidden></div><div id="progressFormAlert" class="alert" hidden></div><div class="form-grid"><label><span>状態</span><select id="progressStatus"><option>未着手</option><option>実施中</option><option>完了</option></select></label><label class="check-field"><input id="progressCompleted" type="checkbox"> 完了</label><label class="full"><span>予定開始日時（手動指定）</span><input id="plannedStartDateTime" type="datetime-local"><small>未完了工程のみ指定できます。依存関係、作業時間、来室日、作業者、装置、完成希望日時を検証します。</small></label><label><span>残り作業時間（分）</span><input id="remainingWorkMinutes" type="number" min="0" step="1"></label><label><span>実績作業時間（分）</span><input id="actualWorkMinutes" type="number" min="0" step="1"></label><label><span>実績開始日時</span><input id="actualStartedAt" type="datetime-local"></label><label><span>実績終了日時</span><input id="actualEndedAt" type="datetime-local"></label></div><div class="dialog-actions"><button type="button" class="ghost dialog-cancel">キャンセル</button><button type="submit" class="primary">保存して予定を再計算</button></div></form>
+    <form id="progressForm"><div class="dialog-header"><div><p class="eyebrow">PROGRESS</p><h2>工程の進捗・予定</h2></div><button type="button" class="icon-button dialog-close" aria-label="閉じる">×</button></div><input type="hidden" id="progressStepId"><div id="progressImpact" class="schedule-alert warning" hidden></div><div id="progressFormAlert" class="alert" hidden></div><div class="form-grid"><label><span>状態</span><select id="progressStatus"><option>未着手</option><option>実施中</option><option>完了</option></select></label><label class="check-field"><input id="progressCompleted" type="checkbox"> 完了</label><label class="full"><span>開始予定（手動指定）</span><input id="plannedStartDateTime" type="datetime-local"><small>前工程、作業可能時間、休日、来室不可日、中断可否、設定済みの完成希望日時を検証します。</small></label><label><span>残り作業時間（分）</span><input id="remainingWorkMinutes" type="number" min="0" step="1"></label><label><span>作業時間（分）</span><input id="actualWorkMinutes" type="number" min="0" step="1"></label><label><span>開始</span><input id="actualStartedAt" type="datetime-local"></label><label><span>終了</span><input id="actualEndedAt" type="datetime-local"></label></div><div class="dialog-actions"><button type="button" class="ghost dialog-cancel">キャンセル</button><button type="submit" class="primary">保存して予定を再計算</button></div></form>
   </dialog>
 
   <dialog id="confirmDialog" class="confirm-dialog">
     <form method="dialog"><h2 id="confirmTitle">確認</h2><p id="confirmMessage"></p><div class="dialog-actions"><button value="cancel" class="ghost">キャンセル</button><button value="confirm" class="danger">削除する</button></div></form>
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="core.js"></script><script src="optimizer.js"></script><script src="app.js"></script>
+  <script src="core.js"></script><script src="app.js"></script>
 </body>
 </html>

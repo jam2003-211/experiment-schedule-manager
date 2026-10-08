@@ -1,8 +1,7 @@
 (function () {
   "use strict";
   const C = window.ExperimentCore;
-  const O = window.ExperimentOptimizer;
-  let migratedOnLoad = false, pendingConfirm = null, calendarCursor = null, optimizationWorker = null, optimizationCancelled = false, availabilityEditingProfileId = null;
+  let migratedOnLoad = false, simplifiedOnLoad = false, pendingConfirm = null, calendarCursor = null, availabilityEditingProfileId = null;
   let data = loadData();
   const $ = (id) => document.getElementById(id);
   const elements = {
@@ -21,6 +20,7 @@
       if (!migration.valid) throw new Error(migration.errors.join("\n"));
       const validation = C.validateData(migration.data);
       if (!validation.valid) throw new Error(validation.errors.join("\n"));
+      if (!localStorage.getItem(C.SIMPLIFICATION_BACKUP_KEY)) { localStorage.setItem(C.SIMPLIFICATION_BACKUP_KEY, raw); simplifiedOnLoad = true; }
       if (migration.migrated) {
         migratedOnLoad = true;
         const originalVersion = JSON.parse(raw).schemaVersion, backupKey = C.migrationBackupKey(originalVersion);
@@ -45,7 +45,7 @@
 
   function filteredIdeas() {
     const query = elements.search.value.trim().toLocaleLowerCase("ja"), status = elements.filter.value;
-    return data.experimentIdeas.filter((idea) => [idea.name, idea.purpose, idea.materials, idea.plannedEquipment, idea.notes].join(" ").toLocaleLowerCase("ja").includes(query) && (!status || idea.status === status)).sort((a, b) => {
+    return data.experimentIdeas.filter((idea) => [idea.name, idea.purpose, idea.materials, idea.notes].join(" ").toLocaleLowerCase("ja").includes(query) && (!status || idea.status === status)).sort((a, b) => {
       if (elements.sort.value === "priority") return priorityRank(a.priority) - priorityRank(b.priority) || a.name.localeCompare(b.name, "ja");
       if (elements.sort.value === "date") return (a.desiredCompletionDate || "9999").localeCompare(b.desiredCompletionDate || "9999");
       if (elements.sort.value === "name") return a.name.localeCompare(b.name, "ja");
@@ -54,7 +54,7 @@
   }
 
   function render() {
-    renderIdeas(); renderTemplates(); renderPlans(); renderAvailability(); renderScheduleControls(); renderResources(); renderOptimizationSetup();
+    renderIdeas(); renderTemplates(); renderPlans(); renderAvailability(); renderScheduleControls();
     $("lastUpdated").textContent = data.updatedAt ? new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(new Date(data.updatedAt)) : "—";
     $("ideaCount").textContent = `${data.experimentIdeas.length}件`; $("schemaVersion").textContent = `v${data.schemaVersion}`;
   }
@@ -66,7 +66,7 @@
     if (!ideas.length && (elements.search.value || elements.filter.value)) elements.ideaList.innerHTML = '<div class="no-results">条件に一致する実験はありません。</div>';
   }
   function ideaCard(idea) {
-    return `<article class="idea-card card" data-id="${escapeHtml(idea.id)}"><div class="card-accent priority-${escapeHtml(idea.priority)}"></div><div class="idea-card-head"><div><span class="status status-${escapeHtml(idea.status)}">${escapeHtml(idea.status)}</span><span class="priority">優先度 ${escapeHtml(idea.priority)}</span></div><div class="card-actions"><button class="icon-button edit-button" aria-label="${escapeHtml(idea.name)}を編集">✎</button><button class="icon-button delete-button" aria-label="${escapeHtml(idea.name)}を削除">⌫</button></div></div><h2>${escapeHtml(idea.name)}</h2><p class="purpose">${escapeHtml(idea.purpose) || "目的は未入力です"}</p><dl><div><dt>希望完成日</dt><dd>${escapeHtml(formatDate(idea.desiredCompletionDate))}</dd></div><div><dt>使用予定装置</dt><dd>${escapeHtml(idea.plannedEquipment) || "未設定"}</dd></div></dl>${idea.materials ? `<p class="meta"><strong>材料</strong> ${escapeHtml(idea.materials)}</p>` : ""}</article>`;
+    return `<article class="idea-card card" data-id="${escapeHtml(idea.id)}"><div class="card-accent priority-${escapeHtml(idea.priority)}"></div><div class="idea-card-head"><div><span class="status status-${escapeHtml(idea.status)}">${escapeHtml(idea.status)}</span><span class="priority">優先度 ${escapeHtml(idea.priority)}</span></div><div class="card-actions"><button class="icon-button edit-button" aria-label="${escapeHtml(idea.name)}を編集">✎</button><button class="icon-button delete-button" aria-label="${escapeHtml(idea.name)}を削除">⌫</button></div></div><h2>${escapeHtml(idea.name)}</h2><p class="purpose">${escapeHtml(idea.purpose) || "目的は未入力です"}</p><dl><div><dt>希望完成日</dt><dd>${escapeHtml(formatDate(idea.desiredCompletionDate))}</dd></div></dl>${idea.materials ? `<p class="meta"><strong>材料</strong> ${escapeHtml(idea.materials)}</p>` : ""}</article>`;
   }
 
   function renderTemplates() {
@@ -88,24 +88,21 @@
       : `<span class="independent-badge">独立コピー</span><button class="secondary" data-action="add-template">テンプレートを追加</button><button class="icon-button" data-action="delete-owner" aria-label="削除">⌫</button>`;
     const mode = C.planScheduleMode(owner), targetText = owner.targetCompletionDateTime ? C.formatZoned(owner.targetCompletionDateTime, data.availability.timeZone) : "未設定", startText = owner.experimentStartDateTime ? C.formatZoned(owner.experimentStartDateTime, data.availability.timeZone) : "未設定", forecastText = owner.forecastCompletionDateTime ? C.formatZoned(owner.forecastCompletionDateTime, data.availability.timeZone) : "未計算", completedCount = steps.filter((step) => C.progressFields(step).completed).length;
     const forecast = !isTemplate && owner.progressForecast?.late ? `<div class="schedule-alert warning progress-warning"><strong>現在の進捗では完成希望日時に間に合わない可能性があります</strong><span>新しい予想完成日時: ${escapeHtml(progressDate(owner.progressForecast.forecastCompletionAt))}</span><span> ／ 遅延時間: ${escapeHtml(duration(owner.progressForecast.delayMinutes))}</span><span> ／ 影響工程: ${escapeHtml((owner.progressForecast.affectedStepNames || []).join("、") || "なし")}</span></div>` : "", recalcError = !isTemplate && owner.progressRecalculationError ? `<div class="schedule-alert error"><strong>予定を自動再計算できませんでした</strong>${escapeHtml(owner.progressRecalculationError)}</div>` : "";
-    return `<article class="card process-card" data-owner-type="${type}" data-owner-id="${escapeHtml(owner.id)}"><header><div><p class="eyebrow">${isTemplate ? "TEMPLATE" : "EXPERIMENT PLAN"}</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p>${!isTemplate && owner.scheduleNeedsRecalculation ? '<span class="result-state">スケジュールの再計算が必要です</span>' : ""}</div><div class="process-actions">${controls}</div></header><div class="process-summary"><span><strong>${steps.length}</strong> 工程</span>${!isTemplate ? `<span class="plan-progress"><strong>進捗：${completedCount} / ${steps.length}工程完了</strong></span><span>方式 <strong>${mode === "forward" ? "順方向" : "逆算"}</strong></span>` : ""}<span>作業 <strong>${duration(steps.reduce((sum, step) => sum + step.workDurationMinutes, 0))}</strong></span><span>待機 <strong>${duration(steps.reduce((sum, step) => sum + step.waitDurationMinutes, 0))}</strong></span>${!isTemplate && mode === "forward" ? `<span>開始 <strong>${escapeHtml(startText)}</strong></span><span>予想完成 <strong>${escapeHtml(forecastText)}</strong></span>${owner.targetCompletionDateTime ? `<span>任意期限 <strong>${escapeHtml(targetText)}</strong></span>` : ""}` : (!isTemplate ? `<span>完成希望 <strong>${escapeHtml(targetText)}</strong></span>` : "")}</div>${forecast}${recalcError}${steps.length ? '<p class="display-order-note">↑↓は表示順だけを変更します。実施順序を変える場合は鉛筆ボタンで先行工程を編集してください。</p>' : ""}<div class="step-flow">${steps.length ? steps.map((step, index) => stepCard(step, steps, index)).join("") : '<div class="no-steps">工程はまだありません。</div>'}</div><button class="add-step-button" data-action="add-step">＋ 工程を追加</button></article>`;
+    return `<article class="card process-card" data-owner-type="${type}" data-owner-id="${escapeHtml(owner.id)}"><header><div><p class="eyebrow">${isTemplate ? "TEMPLATE" : "EXPERIMENT PLAN"}</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p>${!isTemplate && owner.scheduleNeedsRecalculation ? '<span class="result-state">スケジュールの再計算が必要です</span>' : ""}</div><div class="process-actions">${controls}</div></header><div class="process-summary"><span><strong>${steps.length}</strong> 工程</span>${!isTemplate ? `<span class="plan-progress"><strong>進捗：${completedCount} / ${steps.length}工程完了</strong></span><span>方式 <strong>${mode === "forward" ? "順方向" : "逆算"}</strong></span>` : ""}<span>作業 <strong>${duration(steps.reduce((sum, step) => sum + step.workDurationMinutes, 0))}</strong></span><span>待機 <strong>${duration(steps.reduce((sum, step) => sum + step.waitDurationMinutes, 0))}</strong></span>${!isTemplate && mode === "forward" ? `<span>開始 <strong>${escapeHtml(startText)}</strong></span><span>予想完成 <strong>${escapeHtml(forecastText)}</strong></span>${owner.targetCompletionDateTime ? `<span>任意期限 <strong>${escapeHtml(targetText)}</strong></span>` : ""}` : (!isTemplate ? `<span>完成希望 <strong>${escapeHtml(targetText)}</strong></span>` : "")}</div>${forecast}${recalcError}${steps.length ? '<p class="display-order-note">工程は上から順に実施します。↑↓で表示順と実施順を変更できます。</p>' : ""}<div class="step-flow">${steps.length ? steps.map((step, index) => stepCard(step, steps, index)).join("") : '<div class="no-steps">工程はまだありません。</div>'}</div><button class="add-step-button" data-action="add-step">＋ 工程を追加</button></article>`;
   }
   function stepCard(step, siblings, index) {
-    const predecessors = (step.predecessorIds || []).map((id) => siblings.find((item) => item.id === id)?.name).filter(Boolean);
-    const lab = []; if (step.labRequirement?.start) lab.push("開始時"); if (step.labRequirement?.end) lab.push("終了時"); if (step.labRequirement?.waitCheck) lab.push(`待機確認 ${duration(step.waitCheckIntervalMinutes)}ごと`);
-    const equipment = (step.equipmentRequirements || []).map((item) => `${item.equipmentName} ${item.occupancyStartOffsetMinutes || 0}〜${item.occupancyEndOffsetMinutes ?? item.occupancyMinutes}分${item.requiresContinuousMonitoring ? "・監視" : ""}`).join("、"), worker = data.workers.find((item) => item.id === step.assignedWorkerId);
     const orderControls = `<button class="icon-button order-button" data-action="move-step-up" aria-label="${escapeHtml(step.name)}を上へ移動" title="表示順を上へ" ${index === 0 ? "disabled" : ""}>↑</button><button class="icon-button order-button" data-action="move-step-down" aria-label="${escapeHtml(step.name)}を下へ移動" title="表示順を下へ" ${index === siblings.length - 1 ? "disabled" : ""}>↓</button>`, progress = C.progressFields(step), state = stepState(step);
-    const timing = step.ownerType === "plan" ? `<dl class="step-timing"><div><dt>予定開始</dt><dd>${escapeHtml(progressDate(progress.plannedStartDateTime))}</dd></div><div><dt>予定終了</dt><dd>${escapeHtml(progressDate(progress.plannedEndDateTime))}</dd></div><div><dt>実績開始</dt><dd>${escapeHtml(progressDate(progress.actualStartDateTime))}</dd></div><div><dt>実績終了</dt><dd>${escapeHtml(progressDate(progress.actualEndDateTime))}</dd></div><div><dt>状態</dt><dd><span class="progress-state state-${escapeHtml(state)}">${escapeHtml(state)}</span></dd></div><div><dt>完了</dt><dd><label class="completion-check"><input type="checkbox" data-action="complete-step" ${progress.completed ? "checked" : ""}> 完了</label></dd></div></dl>` : "";
-    return `<div class="step-row ${progress.completed ? "step-completed" : ""} ${state === "遅延" ? "step-delayed" : ""}" data-step-id="${escapeHtml(step.id)}"><div class="step-index">${index + 1}</div><div class="step-content"><div class="step-title"><strong>${escapeHtml(step.name)}</strong><span>作業 ${duration(step.workDurationMinutes)}</span>${step.waitDurationMinutes ? `<span class="wait-chip">待機 ${duration(step.waitDurationMinutes)}・${step.waitDurationType === "calendar" ? "暦時間" : "作業時間"}</span>` : ""}<span>${step.interruptible === false ? "中断不可" : "中断可能"}</span></div>${predecessors.length ? `<p class="dependency">↳ 先行: ${escapeHtml(predecessors.join("、"))}</p>` : '<p class="dependency">開始工程</p>'}<div class="step-meta"><span>${step.workLocation === "home" ? "自宅" : "研究室"}・${escapeHtml(worker?.name || "担当未設定")}</span>${equipment ? `<span>装置: ${escapeHtml(equipment)}</span>` : ""}${lab.length ? `<span>来室: ${escapeHtml(lab.join("、"))}</span>` : '<span>来室条件なし</span>'}</div>${timing}</div><div class="card-actions">${orderControls}${step.ownerType === "plan" ? '<button class="icon-button" data-action="progress-step" aria-label="進捗を編集">✓</button>' : ""}<button class="icon-button" data-action="edit-step" aria-label="工程を編集">✎</button><button class="icon-button" data-action="delete-step" aria-label="工程を削除">⌫</button></div></div>`;
+    const timing = step.ownerType === "plan" ? `<dl class="step-timing"><div><dt>開始予定</dt><dd>${escapeHtml(progressDate(progress.plannedStartDateTime))}</dd></div><div><dt>終了予定</dt><dd>${escapeHtml(progressDate(progress.plannedEndDateTime))}</dd></div><div><dt>開始</dt><dd>${escapeHtml(progressDate(progress.actualStartDateTime))}</dd></div><div><dt>終了</dt><dd>${escapeHtml(progressDate(progress.actualEndDateTime))}</dd></div><div><dt>状態</dt><dd><span class="progress-state state-${escapeHtml(state)}">${escapeHtml(state)}</span></dd></div><div><dt>完了</dt><dd><label class="completion-check"><input type="checkbox" data-action="complete-step" ${progress.completed ? "checked" : ""}> 完了</label></dd></div></dl>` : "";
+    return `<div class="step-row ${progress.completed ? "step-completed" : ""} ${state === "遅延" ? "step-delayed" : ""}" data-step-id="${escapeHtml(step.id)}"><div class="step-index">${index + 1}</div><div class="step-content"><div class="step-title"><strong>${escapeHtml(step.name)}</strong><span>作業 ${duration(step.workDurationMinutes)}</span>${step.waitDurationMinutes ? `<span class="wait-chip">待機 ${duration(step.waitDurationMinutes)}・${step.waitDurationType === "calendar" ? "暦時間" : "作業可能時間"}</span>` : ""}<span>${step.interruptible === false ? "中断不可" : "中断可能"}</span></div><div class="step-meta"><span>${step.workLocation === "home" ? "研究室外" : "研究室作業"}</span><span>実施順 ${index + 1}</span></div>${timing}</div><div class="card-actions">${orderControls}${step.ownerType === "plan" ? '<button class="icon-button" data-action="progress-step" aria-label="進捗を編集">✓</button>' : ""}<button class="icon-button" data-action="edit-step" aria-label="工程を編集">✎</button><button class="icon-button" data-action="delete-step" aria-label="工程を削除">⌫</button></div></div>`;
   }
 
   function openIdeaForm(idea) {
     elements.ideaForm.reset(); elements.formAlert.hidden = true; $("ideaId").value = idea?.id || ""; $("dialogTitle").textContent = idea ? "実験を編集" : "実験を登録";
-    if (idea) ["name", "purpose", "materials", "plannedEquipment", "priority", "desiredCompletionDate", "notes", "status"].forEach((key) => { $(key).value = idea[key] || ""; }); else { $("priority").value = "中"; $("status").value = "未計画"; }
+    if (idea) ["name", "purpose", "materials", "priority", "desiredCompletionDate", "notes", "status"].forEach((key) => { $(key).value = idea[key] || ""; }); else { $("priority").value = "中"; $("status").value = "未計画"; }
     elements.ideaDialog.showModal(); setTimeout(() => $("name").focus(), 0);
   }
   function submitIdea(event) {
-    event.preventDefault(); const input = Object.fromEntries(["name", "purpose", "materials", "plannedEquipment", "priority", "desiredCompletionDate", "notes", "status"].map((key) => [key, $(key).value])); const validation = C.validateIdea(input);
+    event.preventDefault(); const input = Object.fromEntries(["name", "purpose", "materials", "priority", "desiredCompletionDate", "notes", "status"].map((key) => [key, $(key).value])); const validation = C.validateIdea(input);
     if (!validation.valid) return showFormError(elements.formAlert, Object.values(validation.errors)[0], Object.keys(validation.errors)[0]);
     const index = data.experimentIdeas.findIndex((idea) => idea.id === $("ideaId").value), updated = C.sanitizeIdea(input, index >= 0 ? data.experimentIdeas[index] : null);
     if (index >= 0) data.experimentIdeas[index] = updated; else data.experimentIdeas.push(updated); elements.ideaDialog.close(); saveData(index >= 0 ? "実験を更新しました" : "実験を登録しました");
@@ -121,27 +118,16 @@
     if (index >= 0) data.templates[index] = updated; else data.templates.push(updated); elements.templateDialog.close(); saveData(index >= 0 ? "テンプレートを更新しました" : "テンプレートを作成しました");
   }
 
-  function addEquipmentRow(requirement) {
-    const start = requirement?.occupancyStartOffsetMinutes ?? 0, end = requirement?.occupancyEndOffsetMinutes ?? requirement?.occupancyMinutes ?? "";
-    $("equipmentRows").insertAdjacentHTML("beforeend", `<div class="equipment-row equipment-row-extended"><label><span>装置名</span><input class="equipment-name" maxlength="100" value="${escapeHtml(requirement?.equipmentName || "")}" placeholder="例：遠心機"></label><label><span>開始位置（分）</span><input class="equipment-start" type="number" min="0" step="1" value="${escapeHtml(start)}"></label><label><span>終了位置（分）</span><input class="equipment-end" type="number" min="1" step="1" value="${escapeHtml(end)}"></label><label class="monitor-field"><input class="equipment-monitor" type="checkbox" ${requirement?.requiresContinuousMonitoring ? "checked" : ""}> 常時監視</label><button type="button" class="icon-button remove-equipment" aria-label="装置を削除">×</button></div>`);
-  }
   function openStepForm(ownerType, ownerId, step) {
     elements.stepForm.reset(); $("stepAlert").hidden = true; $("stepId").value = step?.id || ""; $("stepOwnerType").value = ownerType; $("stepOwnerId").value = ownerId; $("stepDialogTitle").textContent = step ? "工程を編集" : "工程を追加";
     $("stepName").value = step?.name || ""; $("workDurationMinutes").value = step?.workDurationMinutes ?? 30; const waitParts = C.splitWaitDurationMinutes(step?.waitDurationMinutes ?? 0); $("waitDurationDays").value = waitParts.days; $("waitDurationHours").value = waitParts.hours; $("waitDurationMinutesPart").value = waitParts.minutes; $("waitDurationType").value = step?.waitDurationType || "calendar";
-    const workerOptions = data.workers.filter((worker) => worker.active !== false).map((worker) => `<option value="${escapeHtml(worker.id)}">${escapeHtml(worker.name)}</option>`).join(""); $("assignedWorkerId").innerHTML = workerOptions; $("waitCheckWorkerId").innerHTML = workerOptions;
-    $("assignedWorkerId").value = step?.assignedWorkerId || data.workers[0]?.id || ""; $("workLocation").value = step?.workLocation || "lab"; $("interruptible").checked = step?.interruptible !== false;
-    $("labAtStart").checked = !!step?.labRequirement?.start; $("labAtEnd").checked = !!step?.labRequirement?.end; $("labDuringWait").checked = !!step?.labRequirement?.waitCheck; $("waitCheckIntervalMinutes").value = step?.waitCheckIntervalMinutes || 60; $("waitCheckDurationMinutes").value = step?.waitCheckDurationMinutes || 5; $("waitCheckWorkerId").value = step?.waitCheckWorkerId || step?.assignedWorkerId || data.workers[0]?.id || ""; $("waitCheckRequiresLab").checked = step?.waitCheckRequiresLab !== false; $("stepNotes").value = step?.notes || "";
-    const siblings = ownerSteps(ownerType, ownerId).filter((item) => item.id !== step?.id);
-    $("predecessorOptions").innerHTML = siblings.length ? siblings.map((item) => `<label><input type="checkbox" value="${escapeHtml(item.id)}" ${(step?.predecessorIds || []).includes(item.id) ? "checked" : ""}> ${escapeHtml(item.name)}</label>`).join("") : '<p class="muted">先行工程はありません。</p>';
-    $("equipmentRows").innerHTML = ""; (step?.equipmentRequirements || []).forEach(addEquipmentRow); updateWaitCheck(); elements.stepDialog.showModal(); setTimeout(() => $("stepName").focus(), 0);
+    $("workLocation").value = step?.workLocation || "lab"; $("interruptible").checked = step?.interruptible !== false; $("stepNotes").value = step?.notes || "";
+    elements.stepDialog.showModal(); setTimeout(() => $("stepName").focus(), 0);
   }
   function collectStepInput(waitDurationMinutes) {
     return {
       name: $("stepName").value, workDurationMinutes: $("workDurationMinutes").value, waitDurationMinutes, waitDurationType: $("waitDurationType").value,
-      predecessorIds: [...$("predecessorOptions").querySelectorAll("input:checked")].map((input) => input.value),
-      labRequirement: { start: $("labAtStart").checked, end: $("labAtEnd").checked, waitCheck: $("labDuringWait").checked }, waitCheckIntervalMinutes: $("waitCheckIntervalMinutes").value, waitCheckDurationMinutes: $("waitCheckDurationMinutes").value, waitCheckWorkerId: $("waitCheckWorkerId").value, waitCheckRequiresLab: $("waitCheckRequiresLab").checked,
-      assignedWorkerId: $("assignedWorkerId").value, workLocation: $("workLocation").value, interruptible: $("interruptible").checked,
-      equipmentRequirements: [...$("equipmentRows").querySelectorAll(".equipment-row")].map((row) => { const start = Number(row.querySelector(".equipment-start").value), end = Number(row.querySelector(".equipment-end").value); return { equipmentName: row.querySelector(".equipment-name").value, occupancyStartOffsetMinutes: start, occupancyEndOffsetMinutes: end, occupancyMinutes: end - start, requiresContinuousMonitoring: row.querySelector(".equipment-monitor").checked }; }), notes: $("stepNotes").value
+      workLocation: $("workLocation").value, interruptible: $("interruptible").checked, notes: $("stepNotes").value
     };
   }
   function submitStep(event) {
@@ -152,25 +138,15 @@
     const validation = C.validateStep(input, siblings.filter((step) => step.id !== stepId), stepId || null);
     if (!validation.valid) return showFormError($("stepAlert"), Object.values(validation.errors)[0]);
     const index = data.steps.findIndex((step) => step.id === stepId), existing = index >= 0 ? data.steps[index] : null, candidate = C.sanitizeStep(input, existing, ownerType, ownerId);
-    input.equipmentRequirements.forEach((requirement, reqIndex) => {
-      let equipment = data.equipment.find((item) => item.name.toLocaleLowerCase("ja") === requirement.equipmentName.trim().toLocaleLowerCase("ja"));
-      if (!equipment) { equipment = { id: C.makeId("equipment"), name: requirement.equipmentName.trim(), capacity: 1, unavailablePeriods: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; data.equipment.push(equipment); }
-      candidate.equipmentRequirements[reqIndex].equipmentId = equipment.id; candidate.equipmentRequirements[reqIndex].equipmentName = equipment.name;
-    });
-    const prospective = siblings.filter((step) => step.id !== candidate.id).concat(candidate), graph = C.validateDependencyGraph(prospective);
-    if (!graph.valid) return showFormError($("stepAlert"), graph.errors[0]);
     const existingPosition = siblings.findIndex((step) => step.id === stepId);
     siblings.forEach((step, position) => { step.displayOrder = position; });
     candidate.displayOrder = existingPosition >= 0 ? existingPosition : siblings.length;
     if (index >= 0) data.steps[index] = candidate; else data.steps.push(candidate); markPlanScheduleStale(ownerType, ownerId); elements.stepDialog.close(); saveData(index >= 0 ? "工程を更新しました" : "工程を追加しました");
   }
-  function updateWaitCheck() { const disabled = !$("labDuringWait").checked; ["waitCheckIntervalMinutes", "waitCheckDurationMinutes", "waitCheckWorkerId", "waitCheckRequiresLab"].forEach((id) => { $(id).disabled = disabled; }); $("waitCheckField").classList.toggle("disabled", disabled); }
-
   function activeProfile() { return data.availability.profiles.find((item) => item.id === (availabilityEditingProfileId || data.availability.activeProfileId)) || data.availability.profiles[0]; }
   function renderAvailability() {
     const profile = activeProfile(), dayNames = ["日", "月", "火", "水", "木", "金", "土"];
     $("availabilityTimeZone").textContent = data.availability.timeZone;
-    $("availabilityProfileSelect").innerHTML = data.availability.profiles.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join(""); $("availabilityProfileSelect").value = profile.id;
     $("weeklyRows").innerHTML = dayNames.map((name, dayOfWeek) => {
       const setting = profile.weekly.find((item) => item.dayOfWeek === dayOfWeek) || { dayOfWeek, enabled: false, startTime: "09:00", endTime: "18:00" };
       return `<div class="weekly-row" data-day="${dayOfWeek}"><strong>${name}曜日</strong><label><input class="weekly-enabled" type="checkbox" ${setting.enabled ? "checked" : ""}> 作業可能</label><input class="weekly-start" type="time" value="${escapeHtml(setting.startTime)}" ${setting.enabled ? "" : "disabled"}><span>〜</span><input class="weekly-end" type="time" value="${escapeHtml(setting.endTime)}" ${setting.enabled ? "" : "disabled"}></div>`;
@@ -235,7 +211,7 @@
   function clearSchedule() { $("scheduleMessages").innerHTML = ""; $("scheduleResults").hidden = true; }
   function calculateSchedule() {
     const plan = data.plans.find((item) => item.id === $("schedulePlanSelect").value); if (!plan) { showToast("実験計画を作成してください"); return; }
-    const mode = $("scheduleMode").value, target = $("targetCompletionDateTime").value, result = mode === "forward" ? O.calculateForwardSchedule(data, plan.id, $("experimentStartDateTime").value, { targetCompletionDateTime: target }) : C.calculatePlanSchedule(data, plan.id, target);
+    const mode = $("scheduleMode").value, target = $("targetCompletionDateTime").value, result = mode === "forward" ? C.calculateForwardSchedule(data, plan.id, $("experimentStartDateTime").value, { targetCompletionDateTime: target }) : C.calculatePlanSchedule(data, plan.id, target);
     data.scheduleVersions.push(result); plan.scheduleMode = mode; plan.activeScheduleVersionId = result.id; plan.targetCompletionDateTime = result.targetCompletionDateTime || ""; if (mode === "forward") plan.experimentStartDateTime = result.experimentStartDateTime || null; plan.forecastCompletionDateTime = result.forecastCompletionAt || result.targetCompletionDateTime || null; plan.scheduleNeedsRecalculation = false; plan.progressForecast = result.feasible ? { late: !!result.late, forecastCompletionAt: result.forecastCompletionAt || result.targetCompletionDateTime, delayMinutes: result.delayMinutes || 0, affectedStepIds: [], affectedStepNames: [], calculatedAt: result.calculatedAt } : null; plan.progressRecalculationError = null; plan.updatedAt = new Date().toISOString();
     if (result.stepSchedules.length) result.stepSchedules.forEach((schedule) => { const step = data.steps.find((item) => item.id === schedule.stepId); if (step && !C.progressFields(step).completed) C.assignProgressFields(step, { plannedStartDateTime: schedule.startAt, plannedEndDateTime: schedule.endAt }); });
     const cursorAt = result.forecastCompletionAt || result.targetCompletionDateTime || result.experimentStartDateTime; calendarCursor = cursorAt ? C.dateKeyInZone(cursorAt, result.timeZone).slice(0, 7) : null; saveData(result.feasible ? (mode === "forward" ? "順方向スケジュールを保存しました" : "逆算結果を保存しました") : "実行できない理由を保存しました"); switchView("schedule");
@@ -272,88 +248,6 @@
   function renderGantt(version) {
     const dates = version.stepSchedules.flatMap((item) => [item.startAt, item.endAt, item.previousStartAt, item.previousEndAt, item.actualStartAt, item.actualEndAt]).concat([version.targetCompletionDateTime]).filter(Boolean).map((item) => new Date(item).getTime()), start = Math.min(...dates), end = Math.max(...dates), span = Math.max(1, end - start), position = (value) => ((new Date(value).getTime() - start) / span) * 100, bar = (from, to, className, title) => from && to ? `<span class="gantt-bar ${className}" style="left:${position(from)}%;width:${Math.max(.5, position(to) - position(from))}%" title="${title}"></span>` : "";
     $("ganttChart").innerHTML = `<div class="gantt-axis"><span>${escapeHtml(C.formatZoned(new Date(start).toISOString(), version.timeZone))}</span><span>${escapeHtml(C.formatZoned(new Date(end).toISOString(), version.timeZone))}</span></div>${version.stepSchedules.map((item) => `<div class="gantt-row ${item.completed ? "schedule-completed" : ""}"><strong title="${escapeHtml(item.stepName)}">${escapeHtml(item.stepName)}</strong><div class="gantt-track">${item.recalculated && item.previousStartAt !== item.startAt ? bar(item.previousStartAt, item.previousEndAt, "previous", "再計算前の予定") : ""}${(item.workSegments || []).map((segment) => bar(segment.startAt, segment.endAt, item.recalculated ? "work recalculated" : "work", "予定作業")).join("")}${!item.workSegments?.length ? bar(item.startAt, item.endAt, item.recalculated ? "work recalculated" : "work", "予定") : ""}${item.waitStartAt ? bar(item.waitStartAt, item.waitEndAt, "wait", "待機") : ""}${bar(item.actualStartAt, item.actualEndAt || new Date().toISOString(), item.completed ? "completed" : "actual", item.completed ? "完了実績" : "実績")}</div></div>`).join("")}`;
-  }
-
-  function renderResources() {
-    $("workerList").innerHTML = data.workers.map((worker) => `<div class="resource-card" data-worker-id="${escapeHtml(worker.id)}"><div><strong>${escapeHtml(worker.name)}</strong><small>${worker.active === false ? "無効" : "有効"} ／ 利用不可 ${worker.unavailablePeriods?.length || 0}件</small></div><div class="resource-period-form"><input class="worker-unavailable-start" type="datetime-local"><input class="worker-unavailable-end" type="datetime-local"><button class="secondary" data-action="add-worker-period">利用不可を追加</button><button class="icon-button" data-action="edit-worker">✎</button></div>${(worker.unavailablePeriods || []).map((period, index) => `<span class="period-chip">${escapeHtml(C.formatZoned(period.startAt, data.availability.timeZone))}〜${escapeHtml(C.formatZoned(period.endAt, data.availability.timeZone))}<button data-action="delete-worker-period" data-index="${index}">×</button></span>`).join("")}</div>`).join("");
-    $("resourceEquipmentList").innerHTML = data.equipment.length ? data.equipment.map((equipment) => `<div class="resource-card" data-equipment-id="${escapeHtml(equipment.id)}"><div><strong>${escapeHtml(equipment.name)}</strong><label class="capacity-field">同時利用数 <input class="equipment-capacity" type="number" min="1" max="20" value="${equipment.capacity || 1}"></label></div><div class="resource-period-form"><input class="equipment-unavailable-start" type="datetime-local"><input class="equipment-unavailable-end" type="datetime-local"><button class="secondary" data-action="save-equipment">保存</button><button class="secondary" data-action="add-equipment-period">利用不可を追加</button></div>${(equipment.unavailablePeriods || []).map((period, index) => `<span class="period-chip">${escapeHtml(C.formatZoned(period.startAt, data.availability.timeZone))}〜${escapeHtml(C.formatZoned(period.endAt, data.availability.timeZone))}<button data-action="delete-equipment-period" data-index="${index}">×</button></span>`).join("")}</div>`).join("") : '<p class="muted">工程で装置を登録すると、ここに表示されます。</p>';
-  }
-  function submitWorker(event) {
-    event.preventDefault(); const name = $("workerName").value.trim(); if (!name) return; const id = $("workerId").value, existing = data.workers.find((item) => item.id === id);
-    if (existing) existing.name = name; else data.workers.push({ id: C.makeId("worker"), name, labAvailabilityProfileId: "profile_lab", homeAvailabilityProfileId: "profile_home", unavailablePeriods: [], active: true }); event.target.reset(); $("workerId").value = ""; saveData(existing ? "作業者を更新しました" : "作業者を追加しました");
-  }
-  function handleResourceAction(event) {
-    const action = event.target.closest("[data-action]")?.dataset.action; if (!action) return;
-    const workerCard = event.target.closest("[data-worker-id]");
-    if (workerCard) {
-      const worker = data.workers.find((item) => item.id === workerCard.dataset.workerId);
-      if (action === "edit-worker") { $("workerId").value = worker.id; $("workerName").value = worker.name; $("workerName").focus(); return; }
-      if (action === "add-worker-period") { event.preventDefault(); const startAt = C.zonedLocalToIso(workerCard.querySelector(".worker-unavailable-start").value, data.availability.timeZone), endAt = C.zonedLocalToIso(workerCard.querySelector(".worker-unavailable-end").value, data.availability.timeZone); if (!startAt || !endAt || new Date(endAt) <= new Date(startAt)) return alert("作業者の利用不可期間を正しく入力してください。"); worker.unavailablePeriods.push({ startAt, endAt }); saveData("作業者の利用不可期間を追加しました"); }
-      if (action === "delete-worker-period") { worker.unavailablePeriods.splice(Number(event.target.dataset.index), 1); saveData("利用不可期間を削除しました"); }
-      return;
-    }
-    const equipmentCard = event.target.closest("[data-equipment-id]"); if (!equipmentCard) return; const equipment = data.equipment.find((item) => item.id === equipmentCard.dataset.equipmentId);
-    if (action === "save-equipment") { equipment.capacity = Math.max(1, Number(equipmentCard.querySelector(".equipment-capacity").value)); saveData("装置設定を保存しました"); }
-    if (action === "add-equipment-period") { const startAt = C.zonedLocalToIso(equipmentCard.querySelector(".equipment-unavailable-start").value, data.availability.timeZone), endAt = C.zonedLocalToIso(equipmentCard.querySelector(".equipment-unavailable-end").value, data.availability.timeZone); if (!startAt || !endAt || new Date(endAt) <= new Date(startAt)) return alert("装置の利用不可期間を正しく入力してください。"); equipment.unavailablePeriods.push({ startAt, endAt }); saveData("装置の利用不可期間を追加しました"); }
-    if (action === "delete-equipment-period") { equipment.unavailablePeriods.splice(Number(event.target.dataset.index), 1); saveData("装置の利用不可期間を削除しました"); }
-  }
-
-  function renderOptimizationSetup() {
-    const previous = new Map([...$("optimizationPlanOptions").querySelectorAll("[data-plan-option]")].map((row) => [row.dataset.planOption, { checked: row.querySelector('input[type="checkbox"]').checked, target: row.querySelector('input[type="datetime-local"]').value }]));
-    $("optimizationPlanOptions").innerHTML = data.plans.length ? data.plans.map((plan) => { const state = previous.get(plan.id), target = state?.target || C.isoToZonedInput(plan.targetCompletionDateTime, data.availability.timeZone); return `<label class="optimization-plan-row" data-plan-option="${escapeHtml(plan.id)}"><input type="checkbox" ${state ? (state.checked ? "checked" : "") : "checked"}><span><strong>${escapeHtml(plan.name)}</strong><small>優先度 ${escapeHtml(data.experimentIdeas.find((idea) => idea.id === plan.experimentIdeaId)?.priority || "中")}</small></span><input type="datetime-local" value="${escapeHtml(target)}"></label>`; }).join("") : '<p class="muted">実験計画がありません。</p>';
-    const latestRun = data.optimizationRuns.at(-1); if (latestRun) renderOptimizationRun(latestRun);
-  }
-  function runOptimization(sourceData) {
-    const rows = [...$("optimizationPlanOptions").querySelectorAll("[data-plan-option]")].filter((row) => row.querySelector('input[type="checkbox"]').checked); if (rows.length < 2) return showToast("2件以上の実験計画を選択してください");
-    const targetData = sourceData || data, planIds = rows.map((row) => row.dataset.planOption);
-    rows.forEach((row) => { const plan = targetData.plans.find((item) => item.id === row.dataset.planOption), value = row.querySelector('input[type="datetime-local"]').value, target = C.zonedLocalToIso(value, targetData.availability.timeZone); if (plan && target) plan.targetCompletionDateTime = target; });
-    optimizationCancelled = false; $("runOptimizationButton").disabled = true; $("cancelOptimizationButton").disabled = false; $("optimizationStatus").innerHTML = '<div class="schedule-alert warning">制約を検証し、2つの近似プランを計算しています…</div>';
-    const options = { granularityMinutes: Number($("optimizationGranularity").value), maxMilliseconds: Number($("optimizationTimeLimit").value), nowIso: new Date().toISOString() };
-    const accept = (output) => { if (optimizationCancelled) return finishOptimizationUi("計算をキャンセルしました。"); data.optimizationRuns.push(output.run); data.optimizationResults.push(...output.results); if (!sourceData) rows.forEach((row) => { const sourcePlan = data.plans.find((item) => item.id === row.dataset.planOption); sourcePlan.targetCompletionDateTime = targetData.plans.find((item) => item.id === sourcePlan.id).targetCompletionDateTime; }); saveData("最適化結果を保存しました"); renderOptimizationRun(output.run); finishOptimizationUi(); };
-    if (window.Worker && location.protocol !== "file:") {
-      optimizationWorker = new Worker("optimizer-worker.js"); optimizationWorker.onmessage = (event) => { optimizationWorker.terminate(); optimizationWorker = null; if (event.data.ok) accept(event.data.output); else finishOptimizationUi(`計算エラー: ${event.data.error}`, true); }; optimizationWorker.onerror = () => { optimizationWorker?.terminate(); optimizationWorker = null; setTimeout(() => { try { accept(O.optimize(targetData, planIds, options)); } catch (error) { finishOptimizationUi(`計算エラー: ${error.message}`, true); } }, 0); }; optimizationWorker.postMessage({ data: targetData, planIds, options });
-    } else setTimeout(() => { if (optimizationCancelled) return finishOptimizationUi("計算をキャンセルしました。"); try { accept(O.optimize(targetData, planIds, options)); } catch (error) { finishOptimizationUi(`計算エラー: ${error.message}`, true); } }, 30);
-  }
-  function finishOptimizationUi(message, error) { $("runOptimizationButton").disabled = false; $("cancelOptimizationButton").disabled = true; if (message) $("optimizationStatus").innerHTML = `<div class="schedule-alert ${error ? "error" : "warning"}">${escapeHtml(message)}</div>`; }
-  function renderOptimizationRun(run) {
-    const results = [run.fastestResultId, run.attendanceReducedResultId].map((id) => data.optimizationResults.find((item) => item.id === id)).filter(Boolean);
-    $("optimizationStatus").innerHTML = `<div class="optimization-run-meta">計算 ${escapeHtml(C.formatZoned(run.completedAt, data.availability.timeZone))} ／ ${run.elapsedMilliseconds}ms ／ ${escapeHtml(run.algorithmVersion)} ／ 制限時間内の近似探索</div>`;
-    $("optimizationComparison").innerHTML = results.map((result) => optimizationResultCard(result)).join("");
-  }
-  function optimizationCalendar(result, timeZone) {
-    const schedules = result.stepSchedules || []; if (!schedules.length) return "";
-    const firstKey = C.dateKeyInZone(schedules.map((item) => item.startAt).sort()[0], timeZone), lastKey = C.dateKeyInZone(result.metrics.makespan, timeZone), months = [];
-    let cursor = `${firstKey.slice(0, 7)}-01`, guard = 0;
-    while (cursor.slice(0, 7) <= lastKey.slice(0, 7) && guard++ < 6) { months.push(cursor.slice(0, 7)); const [year, month] = cursor.split("-").map(Number), next = new Date(Date.UTC(year, month, 1)); cursor = `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}-01`; }
-    const snapshot = result.inputSnapshot || {}, attendance = snapshot.attendancePreferences || [], availability = snapshot.availability || data.availability, visitSet = new Set(result.labVisitDates || []), starts = new Map();
-    schedules.forEach((item) => { const key = C.dateKeyInZone(item.scheduledWorkStartAt || item.startAt, timeZone); if (!starts.has(key)) starts.set(key, []); starts.get(key).push(item.stepName); });
-    const calendars = months.map((monthKey) => {
-      const [year, month] = monthKey.split("-").map(Number), offset = new Date(Date.UTC(year, month - 1, 1)).getUTCDay(), days = new Date(Date.UTC(year, month, 0)).getUTCDate(), previousDays = new Date(Date.UTC(year, month - 1, 0)).getUTCDate(), cells = [];
-      for (let index = 0; index < 42; index++) {
-        let cellYear = year, cellMonth = month, day = index - offset + 1, outside = false;
-        if (day < 1) { outside = true; day = previousDays + day; cellMonth--; if (cellMonth < 1) { cellMonth = 12; cellYear--; } }
-        else if (day > days) { outside = true; day -= days; cellMonth++; if (cellMonth > 12) { cellMonth = 1; cellYear++; } }
-        const key = `${cellYear}-${String(cellMonth).padStart(2, "0")}-${String(day).padStart(2, "0")}`, preference = attendance.find((item) => item.date === key)?.type || "normal", working = !!C.intervalForDate(key, availability, availability.activeProfileId), classes = [outside ? "outside" : "", visitSet.has(key) ? "lab-day" : "no-lab-day", preference === "preferOff" ? "prefer-off" : "", preference === "cannotVisit" ? "cannot-visit" : "", working ? "" : "nonworking"].filter(Boolean).join(" ");
-        cells.push(`<div class="optimization-calendar-day ${classes}"><span>${day}</span>${visitSet.has(key) ? '<b title="来室必要">来室</b>' : ""}${(starts.get(key) || []).slice(0, 2).map((name) => `<small>${escapeHtml(name)}</small>`).join("")}</div>`);
-      }
-      return `<section class="optimization-month"><h4>${year}年${month}月</h4><div class="optimization-weekdays">${["日", "月", "火", "水", "木", "金", "土"].map((day) => `<span>${day}</span>`).join("")}</div><div class="optimization-calendar-grid">${cells.join("")}</div></section>`;
-    }).join("");
-    return `<div class="optimization-visual"><h3>来室カレンダー</h3><div class="optimization-legend"><span class="lab-key">来室必要</span><span class="no-lab-key">来室不要</span><span class="prefer-key">可能なら休みたい</span><span class="cannot-key">来室不可</span></div><div class="optimization-months">${calendars}</div>${guard >= 6 && cursor.slice(0, 7) <= lastKey.slice(0, 7) ? '<p class="field-note">表示は先頭6か月です。保存結果には全期間が含まれます。</p>' : ""}</div>`;
-  }
-  function optimizationGantt(result, timeZone) {
-    const schedules = result.stepSchedules || []; if (!schedules.length) return ""; const start = Math.min(...schedules.map((item) => new Date(item.startAt).getTime())), end = Math.max(...schedules.map((item) => new Date(item.endAt).getTime())), span = Math.max(1, end - start), position = (value) => ((new Date(value).getTime() - start) / span) * 100;
-    return `<div class="optimization-visual"><h3>工程ガント</h3><div class="gantt-axis"><span>${escapeHtml(C.formatZoned(new Date(start).toISOString(), timeZone))}</span><span>${escapeHtml(C.formatZoned(new Date(end).toISOString(), timeZone))}</span></div>${schedules.map((item) => `<div class="gantt-row"><strong title="${escapeHtml(item.stepName)}">${escapeHtml(item.stepName)}</strong><div class="gantt-track">${(item.workSegments || []).map((segment) => `<span class="gantt-bar work" style="left:${position(segment.startAt)}%;width:${Math.max(.5, position(segment.endAt) - position(segment.startAt))}%" title="作業"></span>`).join("")}${item.waitStartAt && new Date(item.endAt) > new Date(item.waitStartAt) ? `<span class="gantt-bar wait" style="left:${position(item.waitStartAt)}%;width:${Math.max(.5, position(item.endAt) - position(item.waitStartAt))}%" title="待機"></span>` : ""}${(item.equipmentReservations || []).map((reservation) => `<span class="gantt-bar equipment" style="left:${position(reservation.startAt)}%;width:${Math.max(.5, position(reservation.endAt) - position(reservation.startAt))}%" title="装置占有"></span>`).join("")}</div></div>`).join("")}</div>`;
-  }
-  function optimizationResultCard(result) {
-    const title = result.type === "fastest" ? "最短完成プラン" : "来室日数削減プラン";
-    if (!result.feasible) return `<article class="card optimization-result infeasible" data-result-id="${escapeHtml(result.id)}"><h2>${title}</h2><span class="result-state">${result.resolution === "provenInfeasible" ? "数学的・論理的に実行不可能" : "探索制限内で解を発見できません"}</span><ul>${(result.errors || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><h3>代替案</h3><ul>${(result.alternatives || ["完成予定日時または資源設定を見直してください。"]).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></article>`;
-    const timeZone = result.inputSnapshot?.timeZone || data.availability.timeZone, objective = result.type === "fastest" ? "目的関数: 全実験の最終完了日時（メイクスパン）を最小化し、同値なら完了日時合計を最小化" : "目的関数: 来室日数を最小化し、同値なら『可能なら休みたい日』への来室日数を最小化";
-    return `<article class="card optimization-result" data-result-id="${escapeHtml(result.id)}"><header><div><p class="eyebrow">APPROXIMATE</p><h2>${title}</h2><p class="objective-note">${objective}</p></div><button class="primary" data-action="confirm-optimization">この計画を確定</button></header><div class="result-metrics"><span>実際の最終完了 <strong>${escapeHtml(C.formatZoned(result.metrics.makespan, timeZone))}</strong></span><span>来室 <strong>${result.metrics.labVisitDays}日</strong></span><span>休みたい日の来室 <strong>${result.metrics.preferOffVisitDays}日</strong></span></div><div class="plan-completions">${result.planResults.map((item) => `<span>${escapeHtml(item.planName)}: ${escapeHtml(C.formatZoned(item.completionAt, timeZone))}（期限 ${escapeHtml(C.formatZoned(item.targetCompletionDateTime, timeZone))}・期限内）</span>`).join("")}</div>${optimizationCalendar(result, timeZone)}${optimizationGantt(result, timeZone)}<div class="table-scroll"><table class="schedule-table"><thead><tr><th>工程</th><th>開始</th><th>作業終了</th><th>待機終了</th><th>手動開始</th></tr></thead><tbody>${result.stepSchedules.map((item) => `<tr data-opt-step-id="${escapeHtml(item.stepId)}"><td>${escapeHtml(item.stepName)}</td><td>${escapeHtml(C.formatZoned(item.startAt, timeZone))}</td><td>${escapeHtml(C.formatZoned(item.workEndAt, timeZone))}</td><td>${escapeHtml(C.formatZoned(item.endAt, timeZone))}</td><td><input class="manual-start" type="datetime-local" value="${escapeHtml(C.isoToZonedInput(data.steps.find((step) => step.id === item.stepId)?.manualStartAt, timeZone))}"></td></tr>`).join("")}</tbody></table></div><button class="secondary" data-action="recalculate-manual">手動開始を検証して再計算</button><p class="field-note">確定するまで既存の確定済み計画は変更されません。表示日時と手動入力は ${escapeHtml(timeZone)} です。</p></article>`;
-  }
-  function handleOptimizationAction(event) {
-    const action = event.target.closest("[data-action]")?.dataset.action, card = event.target.closest("[data-result-id]"); if (!action || !card) return; const result = data.optimizationResults.find((item) => item.id === card.dataset.resultId);
-    if (action === "confirm-optimization") askConfirm("最適化計画を確定しますか？", "選択した結果を現在の確定計画として設定します。過去の結果は保持されます。", () => { data.confirmedOptimizationResultId = result.id; result.stepSchedules.forEach((schedule) => { const step = data.steps.find((item) => item.id === schedule.stepId); if (step) C.assignProgressFields(step, { plannedStartDateTime: schedule.startAt, plannedEndDateTime: schedule.endAt }); }); result.planResults.forEach((item) => { const plan = data.plans.find((entry) => entry.id === item.planId); if (plan) { plan.confirmedOptimizationResultId = result.id; plan.scheduleNeedsRecalculation = false; } }); saveData("最適化計画を確定しました"); }, "確定する");
-    if (action === "recalculate-manual") { const copy = JSON.parse(JSON.stringify(data)); card.querySelectorAll("[data-opt-step-id]").forEach((row) => { const step = copy.steps.find((item) => item.id === row.dataset.optStepId), value = row.querySelector(".manual-start").value; if (step) step.manualStartAt = value ? C.zonedLocalToIso(value, copy.availability.timeZone) : null; }); runOptimization(copy); }
   }
 
   function openApplyDialog(templateId) {
@@ -416,21 +310,19 @@
     }
   }
   function deleteStep(type, ownerId, stepId) {
-    const step = data.steps.find((item) => item.id === stepId), dependents = ownerSteps(type, ownerId).filter((item) => item.predecessorIds.includes(stepId));
-    askConfirm("工程を削除しますか？", `「${step.name}」を削除します。${dependents.length ? `後続工程 ${dependents.length}件から、この先行関係も削除されます。` : "後続工程への影響はありません。"}`, () => { data.steps = data.steps.filter((item) => item.id !== stepId); ownerSteps(type, ownerId).forEach((item, position) => { item.predecessorIds = item.predecessorIds.filter((id) => id !== stepId); item.displayOrder = position; }); markPlanScheduleStale(type, ownerId); saveData("工程を削除しました"); });
+    const step = data.steps.find((item) => item.id === stepId);
+    askConfirm("工程を削除しますか？", `「${step.name}」を削除します。後ろの工程は1つずつ前へ詰められます。`, () => { data.steps = data.steps.filter((item) => item.id !== stepId); ownerSteps(type, ownerId).forEach((item, position) => { item.displayOrder = position; }); markPlanScheduleStale(type, ownerId); saveData("工程を削除しました"); });
   }
 
   function markPlanScheduleStale(ownerType, ownerId) {
     if (ownerType !== "plan") return;
     const plan = data.plans.find((item) => item.id === ownerId);
-    if (plan && (plan.activeScheduleVersionId || plan.confirmedOptimizationResultId)) plan.scheduleNeedsRecalculation = true;
+    if (plan?.activeScheduleVersionId) plan.scheduleNeedsRecalculation = true;
   }
   function moveStep(ownerType, ownerId, stepId, offset) {
-    const graph = C.validateDependencyGraph(ownerSteps(ownerType, ownerId));
-    if (!graph.valid) return showToast(`表示順を変更できません: ${graph.errors[0]}`);
     const result = C.moveOwnerStepDisplayOrder(data.steps, ownerType, ownerId, stepId, offset);
     if (!result.moved) return showToast(result.error);
-    saveData("表示順を保存しました。実施順序と確定済みスケジュールは変更していません");
+    markPlanScheduleStale(ownerType, ownerId); saveData("工程の表示順と実施順を保存しました");
   }
 
   function handleOwnerAction(event) {
@@ -448,18 +340,18 @@
     if (action === "apply") openApplyDialog(ownerId);
     if (action === "add-template") openAppendTemplateDialog(ownerId);
   }
-  function downstreamSteps(step) { const siblings = ownerSteps(step.ownerType, step.ownerId), found = new Set(), queue = [step.id]; while (queue.length) { const id = queue.shift(); siblings.filter((item) => (item.predecessorIds || []).includes(id) && !found.has(item.id)).forEach((item) => { found.add(item.id); queue.push(item.id); }); } return siblings.filter((item) => found.has(item.id)); }
+  function downstreamSteps(step) { const siblings = ownerSteps(step.ownerType, step.ownerId), index = siblings.findIndex((item) => item.id === step.id); return index < 0 ? [] : siblings.slice(index + 1); }
   function openProgress(step) {
     const progress = C.progressFields(step); $("progressFormAlert").hidden = true; $("progressStepId").value = step.id; $("progressStatus").value = progress.completed ? "完了" : (step.status || "未着手"); $("progressCompleted").checked = progress.completed;
     $("plannedStartDateTime").value = C.isoToZonedInput(progress.plannedStartDateTime, data.availability.timeZone); $("plannedStartDateTime").disabled = progress.completed;
     $("remainingWorkMinutes").value = step.remainingWorkMinutes ?? step.workDurationMinutes; $("actualStartedAt").value = C.isoToZonedInput(progress.actualStartDateTime, data.availability.timeZone); $("actualEndedAt").value = C.isoToZonedInput(progress.actualEndDateTime, data.availability.timeZone); $("actualWorkMinutes").value = step.actualWorkMinutes ?? "";
-    const affected = downstreamSteps(step), impact = $("progressImpact"); impact.hidden = !affected.length; impact.innerHTML = affected.length ? `<strong>再計算の影響範囲</strong>${affected.length}工程（${affected.map((item) => escapeHtml(item.name)).join("、")}）だけを再配置します。無関係な工程と過去の計算結果は保持します。` : ""; $("progressDialog").showModal();
+    const affected = downstreamSteps(step), impact = $("progressImpact"); impact.hidden = !affected.length; impact.innerHTML = affected.length ? `<strong>再計算の影響範囲</strong>この工程より後ろの${affected.length}工程（${affected.map((item) => escapeHtml(item.name)).join("、")}）を順番に再配置します。前の工程と過去の計算結果は保持します。` : ""; $("progressDialog").showModal();
   }
   function applyProgressUpdate(stepId, update, options) {
     const draft = JSON.parse(JSON.stringify(data)), draftStep = draft.steps.find((item) => item.id === stepId), liveStep = data.steps.find((item) => item.id === stepId); if (!draftStep || !liveStep) return { ok: false, error: "工程が見つかりません。" };
     draftStep.status = update.status; draftStep.remainingWorkMinutes = update.completed ? 0 : update.remainingWorkMinutes; draftStep.actualWorkMinutes = update.actualWorkMinutes; draftStep.progressUpdatedAt = update.recordedAt; draftStep.manualStartAt = update.completed ? draftStep.manualStartAt : update.manualStartAt;
     C.assignProgressFields(draftStep, { completed: update.completed, actualStartDateTime: update.actualStartDateTime, actualEndDateTime: update.actualEndDateTime });
-    const result = O.recalculatePlanProgress(draft, draftStep.ownerId, draftStep.id, { nowIso: update.referenceAt, rejectLate: !!options?.rejectLate });
+    const result = C.recalculatePlanProgress(draft, draftStep.ownerId, draftStep.id, { nowIso: update.referenceAt, rejectLate: !!options?.rejectLate });
     const progressKeys = ["status", "remainingWorkMinutes", "actualWorkMinutes", "progressUpdatedAt", "manualStartAt", "completed", "actualStartDateTime", "actualEndDateTime", "actualStartedAt", "actualEndedAt"];
     if (!result.feasible && !options?.allowProgressOnly) return { ok: false, error: result.errors?.[0] || "予定を再計算できません。" };
     progressKeys.forEach((key) => { liveStep[key] = draftStep[key]; });
@@ -479,7 +371,7 @@
     const completed = $("progressCompleted").checked || $("progressStatus").value === "完了", now = new Date().toISOString(), plannedInput = $("plannedStartDateTime").value, manualStartAt = plannedInput ? C.zonedLocalToIso(plannedInput, data.availability.timeZone) : null;
     let actualStart = $("actualStartedAt").value ? C.zonedLocalToIso($("actualStartedAt").value, data.availability.timeZone) : null, actualEnd = $("actualEndedAt").value ? C.zonedLocalToIso($("actualEndedAt").value, data.availability.timeZone) : null;
     if (completed) { actualEnd ||= now; const planned = C.progressFields(step).plannedStartDateTime; actualStart ||= planned && new Date(planned) <= new Date(actualEnd) ? planned : actualEnd; }
-    if (actualStart && actualEnd && new Date(actualEnd) < new Date(actualStart)) return showFormError($("progressFormAlert"), "実績終了日時は実績開始日時以後にしてください。");
+    if (actualStart && actualEnd && new Date(actualEnd) < new Date(actualStart)) return showFormError($("progressFormAlert"), "終了日時は開始日時以後にしてください。");
     const status = completed ? "完了" : $("progressStatus").value, remaining = Math.max(0, Number($("remainingWorkMinutes").value)), recordedAt = now;
     const outcome = applyProgressUpdate(step.id, { status, completed, actualStartDateTime: actualStart, actualEndDateTime: completed ? actualEnd : null, remainingWorkMinutes: remaining, actualWorkMinutes: $("actualWorkMinutes").value === "" ? null : Math.max(0, Number($("actualWorkMinutes").value)), manualStartAt, recordedAt, referenceAt: completed ? actualEnd : now }, { rejectLate: !!manualStartAt && !completed, allowProgressOnly: completed });
     if (!outcome.ok) return showFormError($("progressFormAlert"), outcome.error); $("progressDialog").close(); saveData(outcome.recalculated ? "進捗を保存し、影響を受ける工程の予定を再計算しました" : "進捗を保存しました。予定の再計算が必要です");
@@ -496,7 +388,7 @@
   }
   function switchView(view) {
     document.querySelectorAll(".view").forEach((node) => node.classList.toggle("active", node.id === `${view}View`)); document.querySelectorAll(".nav-item").forEach((node) => node.classList.toggle("active", node.dataset.view === view));
-    const titles = { stock: ["実験ストック", "今後やりたい実験を整理・管理します"], templates: ["工程テンプレート", "作業・待機・装置・来室条件を設計します"], plans: ["実験計画", "テンプレートから独立した個別工程を管理します"], availability: ["作業可能時間", "研究室・自宅の作業時間と来室方針を設定します"], schedule: ["逆算スケジュール", "完成予定日時から工程を逆算します"], resources: ["作業者・装置", "担当者と装置の利用条件を管理します"], optimization: ["複数実験の最適化", "期限を守りながら来室日数を減らします"], data: ["データ管理", "ローカルデータのバックアップと復元"] };
+    const titles = { stock: ["実験ストック", "今後やりたい実験を整理・管理します"], templates: ["工程テンプレート", "作業と待機を実施順に並べます"], plans: ["実験計画", "工程の順番と進捗を管理します"], availability: ["作業可能時間", "曜日、休日、例外、来室方針を設定します"], schedule: ["スケジュール", "開始日時または完成希望日時から予定を作ります"], data: ["データ管理", "ローカルデータのバックアップと復元"] };
     $("pageTitle").textContent = titles[view][0]; $("pageSubtitle").textContent = titles[view][1]; document.querySelector(".sidebar").classList.remove("open");
   }
 
@@ -510,7 +402,6 @@
   $("progressForm").addEventListener("submit", submitProgress);
   $("progressCompleted").addEventListener("change", () => { $("progressStatus").value = $("progressCompleted").checked ? "完了" : ($("progressStatus").value === "完了" ? "未着手" : $("progressStatus").value); $("plannedStartDateTime").disabled = $("progressCompleted").checked; });
   $("progressStatus").addEventListener("change", () => { $("progressCompleted").checked = $("progressStatus").value === "完了"; $("plannedStartDateTime").disabled = $("progressCompleted").checked; });
-  $("addEquipmentButton").addEventListener("click", () => addEquipmentRow()); $("equipmentRows").addEventListener("click", (event) => { if (event.target.closest(".remove-equipment")) event.target.closest(".equipment-row").remove(); }); $("labDuringWait").addEventListener("change", updateWaitCheck);
   document.querySelectorAll(".dialog-close, .dialog-cancel").forEach((button) => button.addEventListener("click", () => button.closest("dialog").close())); $("closeDialog").addEventListener("click", () => elements.ideaDialog.close()); $("cancelButton").addEventListener("click", () => elements.ideaDialog.close());
   elements.confirmDialog.querySelector("form").addEventListener("submit", (event) => {
     if (event.submitter?.value === "confirm" && pendingConfirm) { const action = pendingConfirm; pendingConfirm = null; action(); }
@@ -519,10 +410,8 @@
   $("exportButton").addEventListener("click", exportBackup); $("importButton").addEventListener("click", () => $("importInput").click()); $("importInput").addEventListener("change", (event) => { importBackup(event.target.files[0]); event.target.value = ""; });
   $("weeklyRows").addEventListener("change", (event) => { if (event.target.classList.contains("weekly-enabled")) { const row = event.target.closest(".weekly-row"); row.querySelectorAll('input[type="time"]').forEach((input) => { input.disabled = !event.target.checked; }); } });
   $("saveAvailabilityButton").addEventListener("click", saveAvailability); $("holidayForm").addEventListener("submit", submitHoliday); $("holidayList").addEventListener("click", handleAvailabilityAction); $("exceptionForm").addEventListener("submit", submitException); $("exceptionList").addEventListener("click", handleAvailabilityAction); $("exceptionType").addEventListener("change", toggleExceptionTimes);
-  $("availabilityProfileSelect").addEventListener("change", (event) => { availabilityEditingProfileId = event.target.value; renderAvailability(); }); $("attendanceForm").addEventListener("submit", submitAttendance); $("attendanceList").addEventListener("click", handleAttendanceAction);
-  $("workerForm").addEventListener("submit", submitWorker); $("workerList").addEventListener("click", handleResourceAction); $("resourceEquipmentList").addEventListener("click", handleResourceAction);
-  $("runOptimizationButton").addEventListener("click", () => runOptimization()); $("cancelOptimizationButton").addEventListener("click", () => { optimizationCancelled = true; if (optimizationWorker) optimizationWorker.terminate(); finishOptimizationUi("計算をキャンセルしました。"); }); $("optimizationComparison").addEventListener("click", handleOptimizationAction);
+  $("attendanceForm").addEventListener("submit", submitAttendance); $("attendanceList").addEventListener("click", handleAttendanceAction);
   $("schedulePlanSelect").addEventListener("change", selectSchedulePlan); $("scheduleMode").addEventListener("change", updateScheduleModeUi); $("calculateScheduleButton").addEventListener("click", calculateSchedule); $("calendarPrev").addEventListener("click", () => shiftCalendar(-1)); $("calendarNext").addEventListener("click", () => shiftCalendar(1)); $("calendarToday").addEventListener("click", () => { const now = C.dateKeyInZone(new Date().toISOString(), data.availability.timeZone); calendarCursor = now.slice(0, 7); const plan = data.plans.find((item) => item.id === $("schedulePlanSelect").value), version = activeSchedule(plan); if (version) renderCalendar(version); });
   document.querySelectorAll(".nav-item").forEach((node) => node.addEventListener("click", () => switchView(node.dataset.view))); $("menuButton").addEventListener("click", () => document.querySelector(".sidebar").classList.toggle("open"));
-  render(); if (migratedOnLoad) setTimeout(() => showToast("既存データをスキーマv4へ移行しました"), 100);
+  render(); if (migratedOnLoad) setTimeout(() => showToast("既存データをスキーマv4へ移行しました"), 100); else if (simplifiedOnLoad) setTimeout(() => showToast("簡素化前のデータを安全に退避しました"), 100);
 })();
