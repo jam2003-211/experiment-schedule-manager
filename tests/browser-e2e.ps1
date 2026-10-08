@@ -717,6 +717,50 @@ try {
   Add-Result 'Rolling reload persistence' ($rollingPersistence.completed -and $rollingPersistence.end -eq '2031-06-06T01:00:00.000Z' -and $rollingPersistence.history -ge 3) 'Retained completion, actual end, and schedule history after reload'
   Add-Result 'Rolling JSON backup restore' ($rollingPersistence.backupValid -and $rollingPersistence.restoredCompleted -and $rollingPersistence.restoredEnd -eq $rollingPersistence.end -and $rollingPersistence.rollingHistory) 'Preserved progress fields and rolling schedule history through JSON backup restore'
 
+  [void](Invoke-Js @'
+(() => {
+  const d=ExperimentCore.createEmptyData(),now=new Date().toISOString(),planId='forward_plan';
+  d.experimentIdeas=[{id:'forward_idea',name:'Forward scheduling experiment',purpose:'',materials:'',plannedEquipment:'',priority:'\u4e2d',desiredCompletionDate:'',notes:'',status:'\u5b9f\u65bd\u4e2d',createdAt:now,updatedAt:now}];
+  d.plans=[{id:planId,name:'Forward scheduling plan',experimentIdeaId:'forward_idea',sourceTemplateId:null,scheduleMode:'forward',experimentStartDateTime:null,forecastCompletionDateTime:null,targetCompletionDate:'',targetCompletionDateTime:'',activeScheduleVersionId:null,status:'draft',createdAt:now,updatedAt:now},{id:'legacy_backward_plan',name:'Legacy backward plan',experimentIdeaId:'forward_idea',sourceTemplateId:null,targetCompletionDateTime:'2030-01-10T09:00:00.000Z',activeScheduleVersionId:null,status:'draft',createdAt:now,updatedAt:now}];
+  const mk=(id,name,preds,order,wait)=>({id,ownerType:'plan',ownerId:planId,name,workDurationMinutes:60,waitDurationMinutes:wait,waitDurationType:'calendar',predecessorIds:preds,labRequirement:{start:false,end:false,waitCheck:false},waitCheckIntervalMinutes:0,waitCheckDurationMinutes:0,waitCheckWorkerId:'worker_default',waitCheckRequiresLab:false,assignedWorkerId:'worker_default',workLocation:'lab',interruptible:true,manualStartAt:null,plannedStartAt:null,plannedEndAt:null,plannedStartDateTime:null,plannedEndDateTime:null,equipmentRequirements:[],notes:'',displayOrder:order,createdAt:now,updatedAt:now,actualWorkMinutes:null,actualStartedAt:null,actualEndedAt:null,actualStartDateTime:null,actualEndDateTime:null,completed:false,actualSegments:[],remainingWorkMinutes:60,progressUpdatedAt:null,status:'not-started'});
+  d.steps=[mk('forward_a','Forward A',[],0,120),mk('forward_b','Forward B',['forward_a'],1,0)];
+  localStorage.setItem(ExperimentCore.STORAGE_KEY,JSON.stringify(d));return true;
+})()
+'@)
+  [void](Invoke-Cdp 'Page.reload' @{ ignoreCache = $true })
+  if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Forward scheduling setup reload timed out.' }
+
+  $forwardUi = Invoke-Js @'
+(() => {document.querySelector('[data-view="schedule"]').click();const select=document.getElementById('schedulePlanSelect');select.value='forward_plan';select.dispatchEvent(new Event('change',{bubbles:true}));const mode=document.getElementById('scheduleMode');mode.value='forward';mode.dispatchEvent(new Event('change',{bubbles:true}));return {startVisible:!document.getElementById('experimentStartField').hidden,labelValid:document.getElementById('targetCompletionLabel').textContent==='\u5b8c\u6210\u5e0c\u671b\u65e5\u6642\uff08\u4efb\u610f\uff09',buttonValid:document.getElementById('calculateScheduleButton').textContent==='\u9806\u65b9\u5411\u306b\u8a08\u7b97'};})()
+'@
+  Add-Result 'Forward scheduling mode UI' ($forwardUi.startVisible -and $forwardUi.labelValid -and $forwardUi.buttonValid) 'Displayed the experiment start field and made the completion deadline optional'
+
+  $forwardCalculated = Invoke-Js @'
+(() => {document.getElementById('experimentStartDateTime').value='2030-01-07T09:00';document.getElementById('targetCompletionDateTime').value='';document.getElementById('calculateScheduleButton').click();const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),plan=d.plans.find(x=>x.id==='forward_plan'),version=d.scheduleVersions.find(x=>x.id===plan.activeScheduleVersionId),byId=Object.fromEntries(version.stepSchedules.map(x=>[x.stepId,x])),summary=document.getElementById('scheduleSummary').textContent;return {mode:plan.scheduleMode,start:plan.experimentStartDateTime,target:plan.targetCompletionDateTime,forecast:plan.forecastCompletionDateTime,feasible:version.feasible,deadlineStatus:version.deadlineStatus,late:version.late,aStart:byId.forward_a.startAt,aWorkEnd:byId.forward_a.workEndAt,aEnd:byId.forward_a.endAt,bStart:byId.forward_b.startAt,warning:document.getElementById('scheduleMessages').textContent.includes('\u9593\u306b\u5408\u308f\u306a\u3044'),noDeadline:summary.includes('\u671f\u9650\u306a\u3057')};})()
+'@
+  Add-Result 'Forward schedule without deadline' ($forwardCalculated.feasible -and $forwardCalculated.mode -eq 'forward' -and -not $forwardCalculated.target -and $forwardCalculated.forecast) 'Saved a feasible forward schedule without requiring a completion deadline'
+  Add-Result 'Forward placement from start' ($forwardCalculated.start -eq '2030-01-07T00:00:00.000Z' -and $forwardCalculated.aStart -eq $forwardCalculated.start -and $forwardCalculated.bStart -ge $forwardCalculated.aEnd) 'Placed dependent steps into the future from the experiment start'
+  Add-Result 'Forward waiting time' ((([datetime]$forwardCalculated.aEnd)-([datetime]$forwardCalculated.aWorkEnd)).TotalMinutes -eq 120) 'Included the calendar waiting time before the dependent step'
+  Add-Result 'Forward no-deadline warning suppression' (-not $forwardCalculated.late -and -not $forwardCalculated.deadlineStatus -and -not $forwardCalculated.warning -and $forwardCalculated.noDeadline) 'Displayed the forecast without a deadline-overrun warning'
+
+  $forwardRolling = Invoke-Js @'
+(() => {document.querySelector('[data-view="plans"]').click();const row=document.querySelector('[data-step-id="forward_a"]');row.querySelector('[data-action="progress-step"]').click();document.getElementById('progressCompleted').checked=true;document.getElementById('progressCompleted').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('actualStartedAt').value='2030-01-07T09:00';document.getElementById('actualEndedAt').value='2030-01-07T10:30';document.getElementById('progressForm').requestSubmit();const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),plan=d.plans.find(x=>x.id==='forward_plan'),a=d.steps.find(x=>x.id==='forward_a'),b=d.steps.find(x=>x.id==='forward_b'),version=d.scheduleVersions.find(x=>x.id===plan.activeScheduleVersionId);return {completed:a.completed,actualEnd:a.actualEndDateTime,bStart:b.plannedStartDateTime,mode:version.scheduleMode,kind:version.kind,forecast:plan.forecastCompletionDateTime,late:plan.progressForecast?.late,warning:document.querySelector('[data-owner-id="forward_plan"]')?.textContent.includes('\u9593\u306b\u5408\u308f\u306a\u3044')};})()
+'@
+  Add-Result 'Forward rolling completion update' ($forwardRolling.completed -and $forwardRolling.kind -eq 'rolling' -and $forwardRolling.mode -eq 'forward' -and $forwardRolling.bStart -ge $forwardRolling.actualEnd -and $forwardRolling.forecast) 'Fixed the completed step and recalculated only its unfinished successor from the actual end'
+  Add-Result 'Forward rolling without deadline' (-not $forwardRolling.late -and -not $forwardRolling.warning) 'Updated only the forecast completion when no deadline was configured'
+
+  $forwardDeadline = Invoke-Js @'
+(() => {document.querySelector('[data-view="schedule"]').click();const select=document.getElementById('schedulePlanSelect');select.value='forward_plan';select.dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('scheduleMode').value='forward';document.getElementById('scheduleMode').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('targetCompletionDateTime').value='2030-01-07T10:00';document.getElementById('calculateScheduleButton').click();const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),plan=d.plans.find(x=>x.id==='forward_plan'),version=d.scheduleVersions.find(x=>x.id===plan.activeScheduleVersionId);return {target:plan.targetCompletionDateTime,forecast:version.forecastCompletionAt,status:version.deadlineStatus,late:version.late,warning:document.getElementById('scheduleMessages').textContent.includes('\u9593\u306b\u5408\u308f\u306a\u3044')};})()
+'@
+  Add-Result 'Forward optional deadline save' ($forwardDeadline.target -eq '2030-01-07T01:00:00.000Z') 'Allowed a completion deadline to be added after forward scheduling was established'
+  Add-Result 'Forward forecast and deadline comparison' ($forwardDeadline.late -and $forwardDeadline.status -eq 'late' -and $forwardDeadline.forecast -gt $forwardDeadline.target -and $forwardDeadline.warning) 'Compared the forecast against the optional deadline and displayed a delay outlook'
+
+  $forwardCompatibility = Invoke-Js @'
+(() => {const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),legacy=d.plans.find(x=>x.id==='legacy_backward_plan'),forward=d.plans.find(x=>x.id==='forward_plan'),parsed=ExperimentCore.parseBackup(ExperimentCore.serializeData(d)),restored=parsed.valid?parsed.data.plans.find(x=>x.id==='forward_plan'):null;return {legacyMode:ExperimentCore.planScheduleMode(legacy),backupValid:parsed.valid,mode:restored?.scheduleMode,start:restored?.experimentStartDateTime,forecast:restored?.forecastCompletionDateTime};})()
+'@
+  Add-Result 'Forward backward-mode compatibility' ($forwardCompatibility.legacyMode -eq 'backward') 'Treated an existing plan without scheduleMode as backward scheduling'
+  Add-Result 'Forward JSON backup restore' ($forwardCompatibility.backupValid -and $forwardCompatibility.mode -eq 'forward' -and $forwardCompatibility.start -and $forwardCompatibility.forecast) 'Preserved forward mode, experiment start, and forecast through JSON backup validation'
+
   $results | Format-Table -AutoSize | Out-String -Width 240 | Write-Output
   Write-Output "ALL_TESTS_PASSED=$($results.Count)"
 }

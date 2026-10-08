@@ -84,7 +84,7 @@
       </section>
 
       <section id="scheduleView" class="view">
-        <article class="card schedule-control"><div><label><span>実験計画</span><select id="schedulePlanSelect"></select></label><label><span>完成予定日時</span><input id="targetCompletionDateTime" type="datetime-local"></label></div><button class="primary" id="calculateScheduleButton">逆算する</button></article>
+        <article class="card schedule-control"><div><label><span>実験計画</span><select id="schedulePlanSelect"></select></label><label><span>スケジュール方式</span><select id="scheduleMode"><option value="backward">完成希望日時から逆算</option><option value="forward">開始日時から順方向に計算</option></select></label><label id="experimentStartField" hidden><span>実験開始予定日時</span><input id="experimentStartDateTime" type="datetime-local"></label><label id="targetCompletionField"><span id="targetCompletionLabel">完成希望日時</span><input id="targetCompletionDateTime" type="datetime-local"></label></div><button class="primary" id="calculateScheduleButton">逆算する</button></article>
         <div id="scheduleMessages"></div>
         <section id="scheduleResults" hidden>
           <div class="schedule-summary" id="scheduleSummary"></div>

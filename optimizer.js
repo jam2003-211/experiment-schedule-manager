@@ -204,12 +204,46 @@
     return { feasible: true, resolution: "feasible", stepSchedules: [...scheduled.values()], workerReservations, equipmentReservations, labVisitDates: [...labDays].sort(), preferOffVisitDates: preferOffDates.sort(), planResults, metrics: { makespan: iso(Math.max(...completionTimes)), completionTimeSum: completionTimes.reduce((sum, value) => sum + value, 0), labVisitDays: labDays.size, preferOffVisitDays: preferOffDates.length } };
   }
 
+  function calculateForwardSchedule(data, planId, startValue, options) {
+    const settings = { granularityMinutes: 15, ...(options || {}) }, plan = data.plans.find((item) => item.id === planId), availability = clone(data.availability), errors = [], warnings = [];
+    const versionBase = { id: C.makeId("schedule"), planId, scheduleMode: "forward", kind: "forward", calculatedAt: new Date().toISOString(), timeZone: availability.timeZone || "Asia/Tokyo", availabilitySnapshot: availability, experimentStartDateTime: null, targetCompletionDateTime: null, forecastCompletionAt: null, stepSchedules: [], labVisitDates: [], warnings, errors };
+    if (!plan) return { ...versionBase, feasible: false, errors: ["対象の実験計画が見つかりません。"] };
+    const availabilityValidation = C.validateAvailability(availability); if (!availabilityValidation.valid) return { ...versionBase, feasible: false, errors: availabilityValidation.errors };
+    const startAt = /(?:Z|[+-]\d{2}:\d{2})$/.test(startValue || "") ? new Date(startValue).toISOString() : C.zonedLocalToIso(startValue, availability.timeZone);
+    if (!startAt) return { ...versionBase, feasible: false, errors: ["実験開始予定日時が正しくありません。"] };
+    versionBase.experimentStartDateTime = startAt; versionBase.requiredStartAt = startAt;
+    const targetValue = settings.targetCompletionDateTime || "", targetAt = targetValue ? (/(?:Z|[+-]\d{2}:\d{2})$/.test(targetValue) ? new Date(targetValue).toISOString() : C.zonedLocalToIso(targetValue, availability.timeZone)) : null;
+    if (targetValue && !targetAt) return { ...versionBase, feasible: false, errors: ["完成希望日時が正しくありません。"] }; versionBase.targetCompletionDateTime = targetAt;
+    const steps = C.orderedOwnerSteps(data.steps, "plan", planId), graph = C.validateDependencyGraph(steps); if (!steps.length) return { ...versionBase, feasible: false, errors: ["計算対象の工程がありません。"] }; if (!graph.valid) return { ...versionBase, feasible: false, errors: graph.errors };
+    const byId = new Map(steps.map((step) => [step.id, step])), scheduled = new Map(), workerReservations = [], equipmentReservations = [], labDays = new Set();
+    for (const step of steps.filter((item) => C.progressFields(item).completed)) {
+      const progress = C.progressFields(step); if (!progress.actualStartDateTime || !progress.actualEndDateTime) return { ...versionBase, feasible: false, errors: [`完了工程「${step.name}」の実績日時がありません。`] };
+      const placement = { stepId: step.id, planId, stepName: step.name, startAt: progress.actualStartDateTime, scheduledWorkStartAt: progress.actualStartDateTime, workEndAt: progress.actualEndDateTime, waitStartAt: null, waitEndAt: null, endAt: progress.actualEndDateTime, workSegments: step.actualSegments || [], waitSegments: [], equipmentReservations: [], workerReservations: [], labEvents: [], fixed: true, completed: true };
+      if (!placement.workSegments.length && ms(placement.workEndAt) > ms(placement.scheduledWorkStartAt)) placement.workSegments = [{ startAt: placement.scheduledWorkStartAt, endAt: placement.workEndAt, durationMinutes: Math.max(0, Math.round((ms(placement.workEndAt) - ms(placement.scheduledWorkStartAt)) / 60000)) }];
+      placement.workerReservations = placement.workSegments.map((segment) => ({ resourceId: step.assignedWorkerId, workerId: step.assignedWorkerId, stepId: step.id, kind: "actual", ...segment }));
+      placement.equipmentReservations = (step.equipmentRequirements || []).map((requirement) => ({ resourceId: requirement.equipmentId, equipmentId: requirement.equipmentId, stepId: step.id, startAt: iso(ms(placement.scheduledWorkStartAt) + Number(requirement.occupancyStartOffsetMinutes || 0) * 60000), endAt: iso(ms(placement.scheduledWorkStartAt) + Number(requirement.occupancyEndOffsetMinutes ?? requirement.occupancyMinutes) * 60000), fixed: true }));
+      scheduled.set(step.id, placement); workerReservations.push(...placement.workerReservations); equipmentReservations.push(...placement.equipmentReservations);
+    }
+    const unscheduled = new Set(steps.filter((step) => !C.progressFields(step).completed).map((step) => step.id)), horizonAt = iso(Math.max(ms(startAt), targetAt ? ms(targetAt) : 0) + 366 * 86400000), context = { data, workerReservations, equipmentReservations, granularity: settings.granularityMinutes, searchDeadline: Date.now() + (settings.maxMilliseconds || 10000) };
+    while (unscheduled.size) {
+      const ready = [...unscheduled].map((id) => byId.get(id)).filter((step) => (step.predecessorIds || []).every((id) => scheduled.has(id))); if (!ready.length) return { ...versionBase, feasible: false, errors: ["未完了工程の依存関係を解決できません。"] };
+      ready.sort((a, b) => (a.displayOrder ?? steps.indexOf(a)) - (b.displayOrder ?? steps.indexOf(b))); const step = ready[0], predecessorEnd = (step.predecessorIds || []).map((id) => scheduled.get(id)?.endAt).filter(Boolean).sort().at(-1), earliestAt = predecessorEnd && ms(predecessorEnd) > ms(startAt) ? predecessorEnd : startAt;
+      const candidate = candidatePlacement(context, step, earliestAt, horizonAt, step.manualStartAt || null); if (!candidate.placement) return { ...versionBase, feasible: false, errors: [candidate.error] };
+      const placement = candidate.placement; scheduled.set(step.id, placement); unscheduled.delete(step.id); workerReservations.push(...placement.workerReservations); equipmentReservations.push(...placement.equipmentReservations); placement.labEvents.forEach((event) => labDays.add(C.dateKeyInZone(event.at, availability.timeZone)));
+    }
+    const stepSchedules = steps.map((step) => { const placement = scheduled.get(step.id), progress = C.progressFields(step), labVisits = (placement.labEvents || []).map((event) => ({ ...event, available: true, label: `${step.name} ${event.kind || "来室"}` })); return { ...placement, plannedStartAt: placement.startAt, plannedEndAt: placement.endAt, actualStartAt: progress.actualStartDateTime, actualEndAt: progress.actualEndDateTime, completed: progress.completed, status: progress.completed ? "完了" : (step.status || "未着手"), recalculated: false, labVisits }; });
+    const completionTimes = stepSchedules.map((item) => item.completed && item.actualEndAt ? ms(item.actualEndAt) : ms(item.endAt)), forecastCompletionAt = iso(Math.max(...completionTimes)), late = !!targetAt && ms(forecastCompletionAt) > ms(targetAt), delayMinutes = late ? Math.ceil((ms(forecastCompletionAt) - ms(targetAt)) / 60000) : 0;
+    if (late) warnings.push("現在の進捗では完成希望日時に間に合わない可能性があります");
+    return { ...versionBase, feasible: true, resolution: "feasible", stepSchedules, workerReservations, equipmentReservations, labVisitDates: [...labDays].sort(), forecastCompletionAt, late, delayMinutes, deadlineStatus: targetAt ? (late ? "late" : "onTime") : null };
+  }
+
   function recalculatePlanProgress(data, planId, changedStepId, options) {
     const settings = { granularityMinutes: 15, rejectLate: false, ...(options || {}) }, plan = data.plans.find((item) => item.id === planId);
     const steps = C.orderedOwnerSteps(data.steps, "plan", planId), changed = steps.find((item) => item.id === changedStepId), errors = [];
-    const versionBase = { id: C.makeId("schedule"), planId, kind: "rolling", calculatedAt: new Date().toISOString(), timeZone: data.availability.timeZone, availabilitySnapshot: clone(data.availability), targetCompletionDateTime: plan?.targetCompletionDateTime || null, previousScheduleVersionId: plan?.activeScheduleVersionId || null, changedStepId, affectedStepIds: [], stepSchedules: [], labVisitDates: [], warnings: [], errors };
+    const scheduleMode = C.planScheduleMode(plan), hasDeadline = !!plan?.targetCompletionDateTime && Number.isFinite(ms(plan.targetCompletionDateTime));
+    const versionBase = { id: C.makeId("schedule"), planId, scheduleMode, kind: "rolling", calculatedAt: new Date().toISOString(), timeZone: data.availability.timeZone, availabilitySnapshot: clone(data.availability), experimentStartDateTime: plan?.experimentStartDateTime || null, targetCompletionDateTime: hasDeadline ? plan.targetCompletionDateTime : null, previousScheduleVersionId: plan?.activeScheduleVersionId || null, changedStepId, affectedStepIds: [], stepSchedules: [], labVisitDates: [], warnings: [], errors };
     if (!plan || !changed) return { ...versionBase, feasible: false, errors: ["対象の実験計画または工程が見つかりません。"] };
-    if (!Number.isFinite(ms(plan.targetCompletionDateTime))) return { ...versionBase, feasible: false, errors: ["完成希望日時が正しくありません。"] };
+    if (scheduleMode === "backward" && !hasDeadline) return { ...versionBase, feasible: false, errors: ["完成希望日時が正しくありません。"] };
     const graph = C.validateDependencyGraph(steps); if (!graph.valid) return { ...versionBase, feasible: false, errors: graph.errors };
 
     const byId = new Map(steps.map((step) => [step.id, step])), successors = new Map(steps.map((step) => [step.id, []]));
@@ -246,7 +280,7 @@
     if (errors.length) return { ...versionBase, feasible: false, errors };
 
     const changedProgress = C.progressFields(changed), referenceAt = settings.nowIso || changedProgress.actualEndDateTime || new Date().toISOString();
-    const targetMs = ms(plan.targetCompletionDateTime), referenceMs = ms(referenceAt), horizonAt = iso(Math.max(targetMs, referenceMs) + 366 * 86400000);
+    const targetMs = hasDeadline ? ms(plan.targetCompletionDateTime) : NaN, referenceMs = ms(referenceAt), horizonAt = iso(Math.max(hasDeadline ? targetMs : 0, referenceMs) + 366 * 86400000);
     const unscheduled = new Set(affected), context = { data, workerReservations, equipmentReservations, granularity: settings.granularityMinutes, searchDeadline: Date.now() + (settings.maxMilliseconds || 10000) };
     while (unscheduled.size) {
       const ready = [...unscheduled].map((id) => byId.get(id)).filter((step) => (step.predecessorIds || []).every((id) => scheduled.has(id)));
@@ -266,11 +300,11 @@
       return { ...(previous || {}), ...(placement || {}), stepId: step.id, planId, stepName: step.name, startAt: plannedStart || progress.actualStartDateTime, endAt: plannedEnd || progress.actualEndDateTime, plannedStartAt: plannedStart || null, plannedEndAt: plannedEnd || null, actualStartAt: progress.actualStartDateTime, actualEndAt: progress.actualEndDateTime, completed: progress.completed, status: progress.completed ? "完了" : (step.status || "未着手"), workSegments: progress.completed && previous?.workSegments?.length ? previous.workSegments : (placement?.workSegments || previous?.workSegments || []), previousStartAt: previous?.startAt || progress.plannedStartDateTime || null, previousEndAt: previous?.endAt || progress.plannedEndDateTime || null, recalculated, labVisits };
     }).filter((item) => item.startAt && item.endAt);
     const completionTimes = finalSchedules.map((item) => item.actualEndAt && item.completed ? ms(item.actualEndAt) : ms(item.endAt)).filter(Number.isFinite), forecastCompletionAt = completionTimes.length ? iso(Math.max(...completionTimes)) : null;
-    const delayMinutes = forecastCompletionAt ? Math.max(0, Math.ceil((ms(forecastCompletionAt) - targetMs) / 60000)) : 0, late = delayMinutes > 0;
+    const delayMinutes = hasDeadline && forecastCompletionAt ? Math.max(0, Math.ceil((ms(forecastCompletionAt) - targetMs) / 60000)) : 0, late = hasDeadline && delayMinutes > 0;
     if (late) versionBase.warnings.push("現在の進捗では完成希望日時に間に合わない可能性があります");
     if (late && settings.rejectLate) return { ...versionBase, feasible: false, late, forecastCompletionAt, delayMinutes, affectedStepIds: [...affected], errors: ["指定した予定開始日時では完成希望日時に間に合いません。"] };
     const allVisits = finalSchedules.flatMap((item) => item.labVisits || []), visitDates = new Set([...labDays]); allVisits.forEach((visit) => visitDates.add(C.dateKeyInZone(visit.at, data.availability.timeZone)));
-    return { ...versionBase, feasible: true, resolution: "feasible", stepSchedules: finalSchedules, workerReservations, equipmentReservations, labVisitDates: [...visitDates].filter(Boolean).sort(), requiredStartAt: finalSchedules.map((item) => item.startAt).sort()[0] || null, forecastCompletionAt, delayMinutes, late, affectedStepNames: [...affected].map((id) => byId.get(id)?.name).filter(Boolean) };
+    return { ...versionBase, feasible: true, resolution: "feasible", stepSchedules: finalSchedules, workerReservations, equipmentReservations, labVisitDates: [...visitDates].filter(Boolean).sort(), requiredStartAt: finalSchedules.map((item) => item.startAt).sort()[0] || null, forecastCompletionAt, delayMinutes, late, deadlineStatus: hasDeadline ? (late ? "late" : "onTime") : null, affectedStepNames: [...affected].map((id) => byId.get(id)?.name).filter(Boolean) };
   }
 
   function validateResult(data, result) {
@@ -308,5 +342,5 @@
     return { run, results };
   }
 
-  return { optimize, validateResult, scheduleWithStrategy, recalculatePlanProgress };
+  return { optimize, validateResult, scheduleWithStrategy, calculateForwardSchedule, recalculatePlanProgress };
 });

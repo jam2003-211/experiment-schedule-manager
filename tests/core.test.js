@@ -285,3 +285,68 @@ test("更新後予定に再計算前日時と表示用区分を保持する", ()
   const data = rollingData(), completed = completeRollingStep(data, "2030-01-07T01:00:00.000Z"), result = optimizer.recalculatePlanProgress(data, "p", "a", { nowIso: completed.actualEndDateTime }), next = result.stepSchedules.find((item) => item.stepId === "b");
   assert.equal(next.recalculated, true); assert.equal(next.previousStartAt, "2030-01-07T06:00:00.000Z"); assert.notEqual(next.startAt, next.previousStartAt); assert.ok(Array.isArray(next.labVisits));
 });
+
+function forwardStep(id, predecessors = [], work = 60, wait = 0, waitType = "calendar") {
+  return { ...step(id, work, wait, waitType, predecessors), ownerType: "plan", ownerId: "fp", displayOrder: id === "fa" ? 0 : 1, assignedWorkerId: "worker_default", waitCheckWorkerId: "worker_default", waitCheckDurationMinutes: 0, waitCheckRequiresLab: false, workLocation: "lab", interruptible: true, manualStartAt: null, actualSegments: [], remainingWorkMinutes: work, completed: false };
+}
+
+function forwardData() {
+  const data = core.createEmptyData();
+  data.plans = [{ id: "fp", name: "Forward", scheduleMode: "forward", experimentStartDateTime: "2030-01-07T00:00:00.000Z", targetCompletionDateTime: "", activeScheduleVersionId: null }];
+  data.steps = [forwardStep("fa", [], 60, 120), forwardStep("fb", ["fa"], 60)];
+  return data;
+}
+
+test("完成希望日時なしで順方向スケジュールを作成できる", () => {
+  const result = optimizer.calculateForwardSchedule(forwardData(), "fp", "2030-01-07T09:00");
+  assert.equal(result.feasible, true); assert.equal(result.targetCompletionDateTime, null); assert.equal(result.scheduleMode, "forward"); assert.ok(result.forecastCompletionAt);
+});
+
+test("開始日時から依存工程を未来方向へ配置する", () => {
+  const result = optimizer.calculateForwardSchedule(forwardData(), "fp", "2030-01-07T09:00"), byId = Object.fromEntries(result.stepSchedules.map((item) => [item.stepId, item]));
+  assert.equal(byId.fa.startAt, "2030-01-07T00:00:00.000Z"); assert.ok(new Date(byId.fb.startAt) >= new Date(byId.fa.endAt));
+});
+
+test("順方向計算で待機時間を工程終了へ反映する", () => {
+  const result = optimizer.calculateForwardSchedule(forwardData(), "fp", "2030-01-07T09:00"), first = result.stepSchedules.find((item) => item.stepId === "fa");
+  assert.equal((new Date(first.endAt) - new Date(first.workEndAt)) / 60000, 120); assert.equal(first.waitStartAt, first.workEndAt);
+});
+
+test("順方向計算で作業不可時間と休日を越えて繰り越す", () => {
+  const data = forwardData(); data.steps = [forwardStep("fa", [], 120, 0)]; data.availability.holidays = [{ id: "holiday_forward", date: "2030-01-14", name: "Holiday" }];
+  const result = optimizer.calculateForwardSchedule(data, "fp", "2030-01-11T17:00"), schedule = result.stepSchedules[0];
+  assert.equal(result.feasible, true); assert.equal(core.dateKeyInZone(schedule.endAt, "Asia/Tokyo"), "2030-01-15");
+});
+
+test("順方向モードでも完了後に後続工程をローリング再計算する", () => {
+  const data = forwardData(), initial = optimizer.calculateForwardSchedule(data, "fp", "2030-01-07T09:00"); data.scheduleVersions.push(initial); data.plans[0].activeScheduleVersionId = initial.id; data.plans[0].forecastCompletionDateTime = initial.forecastCompletionAt;
+  initial.stepSchedules.forEach((schedule) => core.assignProgressFields(data.steps.find((item) => item.id === schedule.stepId), { plannedStartDateTime: schedule.startAt, plannedEndDateTime: schedule.endAt }));
+  const first = data.steps[0], originalNext = data.steps[1].plannedStartDateTime; first.status = "完了"; core.assignProgressFields(first, { completed: true, actualStartDateTime: first.plannedStartDateTime, actualEndDateTime: "2030-01-07T01:30:00.000Z" });
+  const rolling = optimizer.recalculatePlanProgress(data, "fp", "fa", { nowIso: first.actualEndDateTime }), next = rolling.stepSchedules.find((item) => item.stepId === "fb");
+  assert.equal(rolling.feasible, true); assert.equal(rolling.scheduleMode, "forward"); assert.notEqual(next.startAt, originalNext); assert.ok(new Date(next.startAt) >= new Date(first.actualEndDateTime));
+});
+
+test("完成希望日時なしの順方向モードでは期限警告を出さない", () => {
+  const result = optimizer.calculateForwardSchedule(forwardData(), "fp", "2030-01-07T09:00");
+  assert.equal(result.late, false); assert.equal(result.deadlineStatus, null); assert.equal(result.warnings.includes("現在の進捗では完成希望日時に間に合わない可能性があります"), false);
+});
+
+test("順方向モードへ後から任意の完成希望日時を設定できる", () => {
+  const result = optimizer.calculateForwardSchedule(forwardData(), "fp", "2030-01-07T09:00", { targetCompletionDateTime: "2030-01-07T18:00" });
+  assert.equal(result.feasible, true); assert.equal(result.targetCompletionDateTime, "2030-01-07T09:00:00.000Z"); assert.equal(result.deadlineStatus, "onTime");
+});
+
+test("順方向の予想完成日時と完成希望日時を比較できる", () => {
+  const result = optimizer.calculateForwardSchedule(forwardData(), "fp", "2030-01-07T09:00", { targetCompletionDateTime: "2030-01-07T12:30" });
+  assert.equal(result.late, true); assert.equal(result.deadlineStatus, "late"); assert.ok(result.delayMinutes > 0); assert.ok(new Date(result.forecastCompletionAt) > new Date(result.targetCompletionDateTime));
+});
+
+test("scheduleMode未設定の既存計画は逆算モードのまま動作する", () => {
+  const data = scheduleData([step("a", 60)]), result = core.calculatePlanSchedule(data, "p", "2030-01-07T18:00", opts);
+  assert.equal(core.planScheduleMode(data.plans[0]), "backward"); assert.equal(result.scheduleMode, "backward"); assert.equal(result.feasible, true);
+});
+
+test("JSONバックアップ復元で順方向モードと開始日時を保持する", () => {
+  const data = forwardData(), result = optimizer.calculateForwardSchedule(data, "fp", "2030-01-07T09:00"); data.scheduleVersions.push(result); data.plans[0].activeScheduleVersionId = result.id; data.plans[0].forecastCompletionDateTime = result.forecastCompletionAt;
+  const restored = core.parseBackup(core.serializeData(data)); assert.equal(restored.valid, true); assert.equal(restored.data.plans[0].scheduleMode, "forward"); assert.equal(restored.data.plans[0].experimentStartDateTime, "2030-01-07T00:00:00.000Z"); assert.equal(restored.data.scheduleVersions[0].scheduleMode, "forward");
+});
