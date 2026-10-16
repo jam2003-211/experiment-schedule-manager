@@ -44,7 +44,8 @@ try {
   $ready = Wait-For { $script:targets = Invoke-RestMethod "http://127.0.0.1:$debugPort/json/list"; [bool]($script:targets | Where-Object { $_.type -eq 'page' -and $_.url -like '*index.html*' }) }
   if (-not $ready) { throw 'Edge DevTools endpoint did not become ready.' }
   $target = $script:targets | Where-Object { $_.type -eq 'page' -and $_.url -like '*index.html*' } | Select-Object -First 1
-  $socket = [Net.WebSockets.ClientWebSocket]::new(); $socket.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult(); [void](Invoke-Cdp 'Runtime.enable'); [void](Invoke-Cdp 'Page.enable')
+  $webSocketUrl = $target.webSocketDebuggerUrl -replace 'localhost', '127.0.0.1'
+  $socket = [Net.WebSockets.ClientWebSocket]::new(); $socket.ConnectAsync([Uri]$webSocketUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult(); [void](Invoke-Cdp 'Runtime.enable'); [void](Invoke-Cdp 'Page.enable')
 
   [void](Invoke-Js @'
 (() => {
@@ -59,7 +60,7 @@ try {
   [void](Invoke-Cdp 'Page.reload' @{ ignoreCache = $true }); if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Reload timed out.' }
 
   $startup = Invoke-Js @'
-(() => {const raw=localStorage.getItem(ExperimentCore.STORAGE_KEY),backup=localStorage.getItem(ExperimentCore.SIMPLIFICATION_BACKUP_KEY),d=JSON.parse(raw);return {backup:!!backup,unchanged:backup===raw,valid:ExperimentCore.parseBackup(raw).valid,schema:d.schemaVersion,resources:!!document.getElementById('resourcesView'),optimization:!!document.getElementById('optimizationView'),workerNav:!!document.querySelector('[data-view="resources"]'),optimizerScript:[...document.scripts].some(x=>/optimizer/.test(x.src)),appReady:document.getElementById('pageTitle').textContent.length>0};})()
+(() => {const raw=localStorage.getItem(ExperimentCore.STORAGE_KEY),backup=localStorage.getItem(ExperimentCore.SIMPLIFICATION_BACKUP_KEY),d=JSON.parse(raw),body=document.body.textContent;return {backup:!!backup,unchanged:backup===raw,valid:ExperimentCore.parseBackup(raw).valid,schema:d.schemaVersion,resources:!!document.getElementById('resourcesView'),optimization:!!document.getElementById('optimizationView'),workerNav:!!document.querySelector('[data-view="resources"]'),optimizerScript:[...document.scripts].some(x=>/optimizer/.test(x.src)),basicFlow:body.includes('\u57fa\u672c\u306e\u6d41\u308c'),savedStatus:!!document.getElementById('saveStatus')||body.includes('\u4fdd\u5b58\u6e08\u307f'),appReady:document.getElementById('pageTitle').textContent.length>0};})()
 '@
   Add-Result 'Safe pre-simplification backup' ($startup.backup -and $startup.unchanged) 'Stored the original valid v4 JSON under a separate key before any save'
   Add-Result 'Existing v4 load' ($startup.valid -and $startup.schema -eq 4) 'Loaded legacy v4 data without schema bump'
@@ -67,6 +68,8 @@ try {
   Add-Result 'Worker management removed' (-not $startup.resources -and -not $startup.workerNav) 'No worker/resource view or navigation remains'
   Add-Result 'Optimization UI removed' (-not $startup.optimization) 'No multi-plan optimization view remains'
   Add-Result 'Optimizer assets removed' (-not $startup.optimizerScript) 'No optimizer or worker script is loaded'
+  Add-Result 'Basic flow block removed' (-not $startup.basicFlow) 'The sidebar explanation block is absent'
+  Add-Result 'Saved status removed' (-not $startup.savedStatus) 'No saved-state label is rendered'
 
   $stepUi = Invoke-Js @'
 (() => {document.querySelector('[data-view="templates"]').click();const card=document.querySelector('[data-owner-id="template"]'),row=card.querySelector('[data-step-id="ta"]');row.querySelector('[data-action="edit-step"]').click();return {worker:!!document.getElementById('assignedWorkerId'),equipment:!!document.getElementById('equipmentRows'),predecessor:!!document.getElementById('predecessorOptions'),waitCheck:!!document.getElementById('waitCheckIntervalMinutes'),days:document.getElementById('waitDurationDays').value,hours:document.getElementById('waitDurationHours').value,minutes:document.getElementById('waitDurationMinutesPart').value,location:!!document.getElementById('workLocation'),interruptible:!!document.getElementById('interruptible')};})()
@@ -90,12 +93,13 @@ try {
   Add-Result 'Template order reload persistence' ($persistedOrder -eq 'tb,ta') 'Retained order after reload'
 
   $plan = Invoke-Js @'
-(() => {document.querySelector('[data-view="templates"]').click();document.querySelector('[data-owner-id="template"] [data-action="apply"]').click();document.querySelector('#applyIdeaOptions input').checked=true;document.getElementById('applyForm').requestSubmit();const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),p=d.plans[0],steps=ExperimentCore.orderedOwnerSteps(d.steps,'plan',p.id);return {id:p.id,mode:ExperimentCore.planScheduleMode(p),source:steps.map(x=>x.sourceTemplateStepId),orders:steps.map(x=>x.displayOrder),legacyIgnored:steps.every(x=>(x.predecessorIds||[]).length===0)};})()
+(() => {document.querySelector('[data-view="templates"]').click();document.querySelector('[data-owner-id="template"] [data-action="apply"]').click();document.querySelector('#applyIdeaOptions input').checked=true;document.getElementById('applyForm').requestSubmit();const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),p=d.plans[0],steps=ExperimentCore.orderedOwnerSteps(d.steps,'plan',p.id),next=document.querySelector(`[data-owner-id="${p.id}"] .next-work-card`);return {id:p.id,mode:ExperimentCore.planScheduleMode(p),source:steps.map(x=>x.sourceTemplateStepId),orders:steps.map(x=>x.displayOrder),legacyIgnored:steps.every(x=>(x.predecessorIds||[]).length===0),unset:next?.textContent.includes('\u6b21\u306e\u4f5c\u696d\u4e88\u5b9a\u306f\u672a\u8a2d\u5b9a\u3067\u3059')};})()
 '@
   Add-Result 'Template apply creates plan' ($plan.id -ne $null -and $plan.source.Count -eq 2) 'Created an independent individual plan'
   Add-Result 'Template apply order inheritance' (($plan.source -join ',') -eq 'tb,ta' -and ($plan.orders -join ',') -eq '0,1') 'Inherited template execution order'
   Add-Result 'New plan ignores predecessor IDs' $plan.legacyIgnored 'Did not copy legacy dependency relations'
   Add-Result 'Existing plan defaults backward' ($plan.mode -eq 'backward') 'Preserved backward behavior for existing-style plans'
+  Add-Result 'Unset next-work message' $plan.unset 'Shows an explicit message before a schedule exists'
 
   $repeat = Invoke-Js @'
 (() => {document.querySelector('[data-view="plans"]').click();const card=document.querySelector('[data-owner-type="plan"]');card.querySelector('[data-action="add-template"]').click();document.getElementById('appendTemplateId').value='template';document.getElementById('appendTemplateId').dispatchEvent(new Event('change',{bubbles:true}));document.getElementById('appendTemplateForm').requestSubmit();return {open:document.getElementById('confirmDialog').open,message:document.getElementById('confirmMessage').textContent.includes('\u65e2\u306b\u9069\u7528')};})()
@@ -114,7 +118,7 @@ try {
 '@
   Add-Result 'Forward mode UI' ($forwardUi.start -and $forwardUi.optional) 'Shows start and optional deadline inputs'
   $forward = Invoke-Js @'
-(() => {document.getElementById('experimentStartDateTime').value='2031-06-02T09:00';document.getElementById('targetCompletionDateTime').value='';document.getElementById('calculateScheduleButton').click();const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),p=d.plans[0],v=d.scheduleVersions.find(x=>x.id===p.activeScheduleVersionId);return {feasible:v.feasible,mode:p.scheduleMode,target:p.targetCompletionDateTime,forecast:p.forecastCompletionDateTime,ids:v.stepSchedules.map(x=>x.stepId),serial:v.stepSchedules.every((x,i,a)=>i===0||new Date(x.startAt)>=new Date(a[i-1].endAt)),warning:document.getElementById('scheduleMessages').textContent.includes('\u9593\u306b\u5408\u308f\u306a\u3044'),calendar:document.querySelectorAll('.calendar-event').length,gantt:document.querySelectorAll('.gantt-bar').length};})()
+(() => {document.getElementById('experimentStartDateTime').value='2031-06-02T09:00';document.getElementById('targetCompletionDateTime').value='';document.getElementById('calculateScheduleButton').click();const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),p=d.plans[0],v=d.scheduleVersions.find(x=>x.id===p.activeScheduleVersionId),next=document.querySelector(`[data-owner-id="${p.id}"] .next-work-card`);return {feasible:v.feasible,mode:p.scheduleMode,target:p.targetCompletionDateTime,forecast:p.forecastCompletionDateTime,ids:v.stepSchedules.map(x=>x.stepId),serial:v.stepSchedules.every((x,i,a)=>i===0||new Date(x.startAt)>=new Date(a[i-1].endAt)),warning:document.getElementById('scheduleMessages').textContent.includes('\u9593\u306b\u5408\u308f\u306a\u3044'),calendar:document.querySelectorAll('.calendar-event').length,gantt:document.querySelectorAll('.gantt-bar').length,nextText:next?.textContent||'',nextStep:ExperimentCore.nextWorkForPlan(d,p.id).step.name,autoSaved:!!JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)).plans[0].activeScheduleVersionId};})()
 '@
   Add-Result 'Forward without deadline' ($forward.feasible -and -not $forward.target) 'Created a schedule without a completion deadline'
   Add-Result 'Forward serial placement' $forward.serial 'Placed steps from top to bottom'
@@ -122,6 +126,18 @@ try {
   Add-Result 'No warning without deadline' (-not $forward.warning) 'Suppressed deadline warning'
   Add-Result 'Calendar rendering' ($forward.calendar -gt 0) 'Rendered schedule events'
   Add-Result 'Gantt rendering' ($forward.gantt -gt 0) 'Rendered schedule bars'
+  Add-Result 'Next work display' ($forward.nextText.Contains($forward.nextStep) -and $forward.nextText -match '\d{1,2}:00') 'Shows the first unfinished step and its planned start'
+  Add-Result 'Autosave retained' $forward.autoSaved 'Schedule changes were written to localStorage without a status label'
+
+  $multiCalendar = Invoke-Js @'
+(() => {const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),now='2031-06-01T00:00:00.000Z';d.experimentIdeas.push({id:'idea2',name:'Second experiment',purpose:'',materials:'',priority:'\u4e2d',desiredCompletionDate:'',notes:'',status:'\u5b9f\u65bd\u4e2d',createdAt:now,updatedAt:now});const p={id:'plan2',name:'Second experiment plan',experimentIdeaId:'idea2',sourceTemplateId:null,scheduleMode:'forward',experimentStartDateTime:'2031-06-02T09:30',forecastCompletionDateTime:null,targetCompletionDateTime:'',activeScheduleVersionId:null,createdAt:now,updatedAt:now};d.plans.push(p);d.steps.push({id:'second-step',ownerType:'plan',ownerId:'plan2',name:'Second process',displayOrder:0,workDurationMinutes:60,waitDurationMinutes:0,waitDurationType:'calendar',workLocation:'lab',interruptible:true,manualStartAt:null,notes:'',plannedStartDateTime:null,plannedEndDateTime:null,actualStartDateTime:null,actualEndDateTime:null,completed:false,remainingWorkMinutes:60,status:'\u672a\u7740\u624b',createdAt:now,updatedAt:now});const v=ExperimentCore.calculateForwardSchedule(d,'plan2','2031-06-02T09:30');d.scheduleVersions.push(v);p.activeScheduleVersionId=v.id;p.forecastCompletionDateTime=v.forecastCompletionAt;v.stepSchedules.forEach(s=>ExperimentCore.assignProgressFields(d.steps.find(x=>x.id===s.stepId),{plannedStartDateTime:s.startAt,plannedEndDateTime:s.endAt}));localStorage.setItem(ExperimentCore.STORAGE_KEY,JSON.stringify(d));location.reload();return true;})()
+'@
+  if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Multi-calendar reload timed out.' }
+  $multiCalendar = Invoke-Js @'
+(() => {document.querySelector('[data-view="schedule"]').click();const text=document.getElementById('scheduleCalendar').textContent,day=[...document.querySelectorAll('.calendar-day')].find(x=>x.textContent.includes('Simple experiment')&&x.textContent.includes('Second experiment'));return {filters:document.querySelectorAll('[data-calendar-plan-id]').length,first:text.includes('Simple experiment')&&text.includes('First'),second:text.includes('Second experiment')&&text.includes('Second process'),sameDay:!!day,eventCount:day?.querySelectorAll('.calendar-event').length||0};})()
+'@
+  Add-Result 'Multi-experiment calendar' ($multiCalendar.filters -eq 2 -and $multiCalendar.first -and $multiCalendar.second) 'Shows experiment and step names from two active plans'
+  Add-Result 'Same-day events all visible' ($multiCalendar.sameDay -and $multiCalendar.eventCount -ge 2) 'Displays every experiment scheduled on the same day'
 
   $deadline = Invoke-Js @'
 (() => {document.getElementById('targetCompletionDateTime').value='2031-06-02T10:00';document.getElementById('calculateScheduleButton').click();const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),p=d.plans[0],v=d.scheduleVersions.find(x=>x.id===p.activeScheduleVersionId);return {target:!!p.targetCompletionDateTime,late:v.late,status:v.deadlineStatus,warning:document.getElementById('scheduleMessages').textContent.includes('\u9593\u306b\u5408\u308f\u306a\u3044')};})()

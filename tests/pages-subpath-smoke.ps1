@@ -52,6 +52,10 @@ try {
   }
 
   Assert-True ($indexResponse.Content -notmatch 'optimizer(?:-worker)?\.js') 'Removed optimizer assets are still referenced by index.html.'
+  Assert-True ($indexResponse.Content -notmatch '基本の流れ') 'Removed sidebar explanation is still present.'
+  Assert-True ($indexResponse.Content -notmatch 'id=["'']saveStatus["'']') 'Removed saved-status element is still present.'
+  Assert-True ($indexResponse.Content -match 'id=["'']calendarPlanFilters["'']') 'Multi-experiment calendar filter is missing.'
+  Assert-True ($indexResponse.Content -match 'id=["'']cannotVisitForm["'']') 'Cannot-visit constraint UI is missing.'
 
   Write-Output "PAGES_SUBPATH_SMOKE_PASSED=True"
   Write-Output "PAGES_SUBPATH_URL=$baseUrl"

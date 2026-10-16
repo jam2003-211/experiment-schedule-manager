@@ -22,10 +22,6 @@
         <button class="nav-item" data-view="schedule"><span>▤</span> スケジュール</button>
         <button class="nav-item" data-view="data"><span>⇅</span> データ管理</button>
       </nav>
-      <div class="future-menu">
-        <p>基本の流れ</p>
-        <span>工程を順番に並べる</span><span>予定を作成する</span><span>完了時に後続を更新する</span>
-      </div>
       <div class="local-badge"><span></span> ローカル保存のみ</div>
     </aside>
 
@@ -33,7 +29,6 @@
       <header class="topbar">
         <button id="menuButton" class="icon-button menu-button" aria-label="メニューを開く">☰</button>
         <div><h1 id="pageTitle">実験ストック</h1><p id="pageSubtitle">今後やりたい実験を整理・管理します</p></div>
-        <div class="save-status" id="saveStatus" role="status">保存済み</div>
       </header>
 
       <section id="stockView" class="view active">
@@ -78,17 +73,19 @@
           <article class="card settings-card"><h2>休日</h2><p>外部APIは使わず、必要な休日を手動登録します。</p><form id="holidayForm" class="inline-form"><input id="holidayDate" type="date" required><input id="holidayName" maxlength="50" placeholder="名称（任意）"><button class="secondary" type="submit">追加</button></form><div id="holidayList" class="setting-list"></div></article>
           <article class="card settings-card"><h2>日付別の例外</h2><p>特定日を作業可能または作業不可にします。</p><form id="exceptionForm" class="exception-form"><input type="hidden" id="exceptionId"><label><span>日付</span><input id="exceptionDate" type="date" required></label><label><span>区分</span><select id="exceptionType"><option value="available">作業可能</option><option value="unavailable">作業不可</option></select></label><label class="exception-time"><span>開始</span><input id="exceptionStart" type="time" value="09:00"></label><label class="exception-time"><span>終了</span><input id="exceptionEnd" type="time" value="18:00"></label><label><span>メモ</span><input id="exceptionLabel" maxlength="80"></label><button class="secondary" type="submit">保存</button></form><div id="exceptionList" class="setting-list"></div></article>
         </div>
-        <article class="card settings-card attendance-card"><h2>来室日の設定</h2><p>研究室に行けない日は研究室作業の必須制約です。「可能なら休みたい日」は参考情報として表示します。</p><form id="attendanceForm" class="inline-form"><input id="attendanceDate" type="date" required><select id="attendanceType"><option value="normal">通常の作業可能日</option><option value="preferOff">可能なら休みたい日</option><option value="cannotVisit">研究室に行けない日</option></select><input id="attendanceNote" maxlength="80" placeholder="メモ"><button class="secondary" type="submit">保存</button></form><div id="attendanceList" class="setting-list"></div></article>
+        <article class="card settings-card cannot-visit-card"><h2>来室不可日</h2><p>研究室作業を配置できない日を登録します。日程を集約するための優先設定には使用しません。</p><form id="cannotVisitForm" class="inline-form"><input id="cannotVisitDate" type="date" required><input id="cannotVisitNote" maxlength="80" placeholder="メモ"><button class="secondary" type="submit">追加</button></form><div id="cannotVisitList" class="setting-list"></div></article>
       </section>
 
       <section id="scheduleView" class="view">
         <article class="card schedule-control"><div><label><span>実験計画</span><select id="schedulePlanSelect"></select></label><label><span>スケジュール方式</span><select id="scheduleMode"><option value="backward">完成希望日時から逆算</option><option value="forward">開始日時から順方向に計算</option></select></label><label id="experimentStartField" hidden><span>実験開始予定日時</span><input id="experimentStartDateTime" type="datetime-local"></label><label id="targetCompletionField"><span id="targetCompletionLabel">完成希望日時</span><input id="targetCompletionDateTime" type="datetime-local"></label></div><button class="primary" id="calculateScheduleButton">逆算する</button></article>
         <div id="scheduleMessages"></div>
         <section id="scheduleResults" hidden>
-          <div class="schedule-summary" id="scheduleSummary"></div>
-          <article class="card schedule-table-card"><h2>工程別スケジュール</h2><div class="table-scroll"><table class="schedule-table"><thead><tr><th>工程</th><th>開始予定</th><th>終了予定</th><th>開始／終了</th><th>状態</th></tr></thead><tbody id="scheduleTableBody"></tbody></table></div></article>
-          <article class="card calendar-card"><header><div><h2>月間カレンダー</h2><p>予定・実績・完了済み・再計算前の予定を区別して表示します。</p></div><div class="calendar-nav"><button class="ghost" id="calendarPrev">‹</button><button class="ghost" id="calendarToday">今日</button><strong id="calendarMonthLabel"></strong><button class="ghost" id="calendarNext">›</button></div></header><div class="calendar-weekdays"><span>日</span><span>月</span><span>火</span><span>水</span><span>木</span><span>金</span><span>土</span></div><div id="scheduleCalendar" class="schedule-calendar"></div></article>
-          <article class="card gantt-card"><header><h2>ガントチャート</h2><p>緑は予定、青は実績、濃緑は完了、点線は再計算前の予定、黄は待機です。</p></header><div id="ganttChart" class="gantt-chart"></div></article>
+          <div id="selectedScheduleDetails">
+            <div class="schedule-summary" id="scheduleSummary"></div>
+            <article class="card schedule-table-card"><h2>工程別スケジュール</h2><div class="table-scroll"><table class="schedule-table"><thead><tr><th>工程</th><th>開始予定</th><th>終了予定</th><th>開始</th><th>終了</th><th>完了状態</th></tr></thead><tbody id="scheduleTableBody"></tbody></table></div></article>
+          </div>
+          <article class="card calendar-card"><header><div><h2>進行中の実験カレンダー</h2><p>未完了の実験計画について、現在有効な工程予定を同じ月に表示します。</p></div><div class="calendar-nav"><button class="ghost" id="calendarPrev">‹</button><button class="ghost" id="calendarToday">今日</button><strong id="calendarMonthLabel"></strong><button class="ghost" id="calendarNext">›</button></div></header><div id="calendarPlanFilters" class="calendar-plan-filters" aria-label="表示する実験"></div><div class="calendar-weekdays"><span>日</span><span>月</span><span>火</span><span>水</span><span>木</span><span>金</span><span>土</span></div><div id="scheduleCalendar" class="schedule-calendar"></div></article>
+          <article id="scheduleGanttCard" class="card gantt-card"><header><h2>ガントチャート</h2><p>選択中の実験について、緑は予定、青は開始・終了、濃緑は完了、黄は待機です。</p></header><div id="ganttChart" class="gantt-chart"></div></article>
         </section>
       </section>
 

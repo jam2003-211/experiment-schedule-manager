@@ -1,0 +1,8 @@
+{
+  "name": "experiment-schedule-manager",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test tests/core.test.js tests/simple-workflow.test.js"
+  }
+}

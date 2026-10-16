@@ -19,11 +19,11 @@
     return [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({ dayOfWeek, enabled: dayOfWeek >= 1 && dayOfWeek <= 5, startTime: "09:00", endTime: "18:00" }));
   }
   function defaultAvailability() {
-    return { timeZone: "Asia/Tokyo", activeProfileId: "profile_lab", profiles: [{ id: "profile_lab", name: "研究室", locationType: "lab", weekly: defaultWeekly() }, { id: "profile_home", name: "自宅", locationType: "home", weekly: defaultWeekly().map((day) => ({ ...day, enabled: false })) }], holidays: [], exceptions: [] };
+    return { timeZone: "Asia/Tokyo", activeProfileId: "profile_lab", profiles: [{ id: "profile_lab", name: "研究室", locationType: "lab", weekly: defaultWeekly() }, { id: "profile_home", name: "自宅", locationType: "home", weekly: defaultWeekly().map((day) => ({ ...day, enabled: false })) }], holidays: [], exceptions: [], cannotVisitDates: [] };
   }
 
   function createEmptyData() {
-    return { schemaVersion: SCHEMA_VERSION, updatedAt: nowIso(), experimentIdeas: [], templates: [], plans: [], steps: [], availability: defaultAvailability(), attendancePreferences: [], scheduleVersions: [] };
+    return { schemaVersion: SCHEMA_VERSION, updatedAt: nowIso(), experimentIdeas: [], templates: [], plans: [], steps: [], availability: defaultAvailability(), scheduleVersions: [] };
   }
   function makeId(prefix) {
     if (typeof crypto !== "undefined" && crypto.randomUUID) return `${prefix}_${crypto.randomUUID()}`;
@@ -50,6 +50,15 @@
     step.actualStartedAt = current.actualStartDateTime; step.actualEndedAt = current.actualEndDateTime;
     if (current.completed) step.status = "完了";
     return step;
+  }
+
+  function nextWorkForPlan(data, planId) {
+    const plan = (data.plans || []).find((item) => item.id === planId);
+    if (!plan) return null;
+    const steps = orderedOwnerSteps(data.steps, "plan", planId), step = steps.find((item) => !progressFields(item).completed);
+    if (!step) return { planId, completed: true, step: null, startAt: null, endAt: null };
+    const version = (data.scheduleVersions || []).find((item) => item.id === plan.activeScheduleVersionId), scheduled = version?.stepSchedules?.find((item) => item.stepId === step.id), progress = progressFields(step);
+    return { planId, completed: false, step, startAt: progress.plannedStartDateTime || scheduled?.startAt || null, endAt: progress.plannedEndDateTime || scheduled?.endAt || null };
   }
 
   function splitWaitDurationMinutes(value) {
@@ -223,12 +232,14 @@
     if (!Array.isArray(availability.profiles) || !availability.profiles.length) errors.push("作業可能時間のプロファイルがありません。");
     if (!Array.isArray(availability.holidays)) errors.push("休日設定は配列である必要があります。");
     if (!Array.isArray(availability.exceptions)) errors.push("日付別例外は配列である必要があります。");
+    if (availability.cannotVisitDates !== undefined && !Array.isArray(availability.cannotVisitDates)) errors.push("来室不可日は配列である必要があります。");
     (Array.isArray(availability.profiles) ? availability.profiles : []).forEach((profile) => {
       if (!profile.id || !profile.name || !Array.isArray(profile.weekly)) errors.push("作業可能時間プロファイルの形式が正しくありません。");
       (Array.isArray(profile.weekly) ? profile.weekly : []).forEach((day) => { if (!Number.isInteger(day.dayOfWeek) || day.dayOfWeek < 0 || day.dayOfWeek > 6 || typeof day.enabled !== "boolean") errors.push(`${profile.name || "作業可能時間"}の曜日設定の形式が正しくありません。`); if (day.enabled && (!Number.isFinite(timeToMinutes(day.startTime)) || !Number.isFinite(timeToMinutes(day.endTime)) || timeToMinutes(day.startTime) >= timeToMinutes(day.endTime))) errors.push(`${profile.name}の曜日設定に、開始時刻が終了時刻以降の行があります。`); });
     });
     (Array.isArray(availability.holidays) ? availability.holidays : []).forEach((item) => { if (!item?.id || !parseDateKey(item.date)) errors.push("休日設定のIDまたは日付が正しくありません。"); });
     (Array.isArray(availability.exceptions) ? availability.exceptions : []).forEach((item) => { if (!item?.id || !parseDateKey(item.date) || !["available", "unavailable"].includes(item.type)) errors.push("日付別例外のID、日付、種類が正しくありません。"); if (item.type === "available" && (!Number.isFinite(timeToMinutes(item.startTime)) || !Number.isFinite(timeToMinutes(item.endTime)) || timeToMinutes(item.startTime) >= timeToMinutes(item.endTime))) errors.push(`${item.date}の日付別例外で開始時刻が終了時刻以降です。`); });
+    (Array.isArray(availability.cannotVisitDates) ? availability.cannotVisitDates : []).forEach((item) => { if (!item?.id || !parseDateKey(item.date)) errors.push("来室不可日のIDまたは日付が正しくありません。"); });
     return { valid: errors.length === 0, errors: [...new Set(errors)] };
   }
   function intervalForDate(dateKey, availability, profileId) {
@@ -274,7 +285,7 @@
   function availabilityForStep(data, step) {
     const availability = deepClone(data.availability), labWork = (step.workLocation || "lab") === "lab";
     if (labWork) {
-      const blocked = new Set((data.attendancePreferences || []).filter((item) => item.type === "cannotVisit").map((item) => item.date));
+      const blocked = new Set((availability.cannotVisitDates || []).map((item) => item.date));
       availability.exceptions = (availability.exceptions || []).filter((item) => !blocked.has(item.date));
       blocked.forEach((date) => { if (!(availability.holidays || []).some((item) => item.date === date)) availability.holidays.push({ id: `cannotVisit_${date}`, date, name: "来室不可日" }); });
     }
@@ -323,10 +334,6 @@
     }
     throw new Error("中断不可工程に必要な連続作業時間を確保できません。");
   }
-  function labVisitsFor(step, workSegments) {
-    if ((step.workLocation || "lab") !== "lab") return [];
-    return (workSegments || []).flatMap((segment) => [{ kind: "workStart", at: segment.startAt, label: `${step.name} 作業開始`, available: true }, { kind: "workEnd", at: segment.endAt, label: `${step.name} 作業終了`, available: true }]);
-  }
   function scheduleOneStepBackward(data, step, deadlineIso) {
     const availability = availabilityForStep(data, step), profileId = availability.activeProfileId || availability.profiles[0].id, workMinutes = Number(step.workDurationMinutes), waitMinutes = Number(step.waitDurationMinutes), deadlineMs = new Date(deadlineIso).getTime();
     let waitStartAt = null, waitEndAt = null, waitSegments = [], workDeadline = deadlineIso;
@@ -336,7 +343,7 @@
     const workEndAt = workMinutes > 0 ? work.endAt : workDeadline;
     if (waitMinutes > 0) { waitStartAt = workEndAt; if (step.waitDurationType === "calendar") waitEndAt = new Date(new Date(waitStartAt).getTime() + waitMinutes * 60000).toISOString(); }
     const startAt = workMinutes > 0 ? work.startAt : (waitStartAt || deadlineIso), endAt = waitMinutes > 0 ? waitEndAt : workEndAt;
-    return { stepId: step.id, stepName: step.name, startAt, endAt, deadlineAt: deadlineIso, workStartAt: workMinutes ? work.startAt : null, workEndAt: workMinutes ? work.endAt : null, waitStartAt, waitEndAt, workSegments: work.segments, waitSegments, labVisits: labVisitsFor(step, work.segments) };
+    return { stepId: step.id, stepName: step.name, startAt, endAt, deadlineAt: deadlineIso, workStartAt: workMinutes ? work.startAt : null, workEndAt: workMinutes ? work.endAt : null, waitStartAt, waitEndAt, workSegments: work.segments, waitSegments };
   }
   function scheduleOneStepForward(data, step, earliestIso, manualStartAt) {
     const availability = availabilityForStep(data, step), profileId = availability.activeProfileId || availability.profiles[0].id, workMinutes = Number(step.status === "実施中" ? (step.remainingWorkMinutes ?? step.workDurationMinutes) : step.workDurationMinutes), waitMinutes = Number(step.waitDurationMinutes);
@@ -350,12 +357,11 @@
     if (waitMinutes > 0 && step.waitDurationType === "calendar") waitEndAt = new Date(new Date(workEndAt).getTime() + waitMinutes * 60000).toISOString();
     if (waitMinutes > 0 && step.waitDurationType === "working") { const wait = addWorkingMinutes(workEndAt, waitMinutes, availability, profileId); waitEndAt = wait.endAt; waitSegments = wait.segments; }
     const startAt = step.status === "実施中" && progressFields(step).actualStartDateTime ? progressFields(step).actualStartDateTime : work.startAt, endAt = waitEndAt || workEndAt;
-    return { stepId: step.id, stepName: step.name, startAt, scheduledWorkStartAt: work.startAt, endAt, workStartAt: workMinutes ? work.startAt : null, workEndAt: workMinutes ? workEndAt : null, waitStartAt, waitEndAt, workSegments: work.segments, waitSegments, labVisits: labVisitsFor(step, work.segments), manual: !!manualStartAt };
+    return { stepId: step.id, stepName: step.name, startAt, scheduledWorkStartAt: work.startAt, endAt, workStartAt: workMinutes ? work.startAt : null, workEndAt: workMinutes ? workEndAt : null, waitStartAt, waitEndAt, workSegments: work.segments, waitSegments, manual: !!manualStartAt };
   }
-  function collectVisitDates(schedules, timeZone) { return [...new Set(schedules.flatMap((item) => item.labVisits || []).map((visit) => dateKeyInZone(visit.at, timeZone)))].sort(); }
   function calculatePlanSchedule(data, planId, targetLocalValue, options) {
     const plan = data.plans.find((item) => item.id === planId), availability = deepClone(data.availability), errors = [], warnings = [];
-    const versionBase = { id: makeId("schedule"), planId, scheduleMode: "backward", kind: "backward", calculatedAt: nowIso(), timeZone: availability.timeZone || "Asia/Tokyo", availabilitySnapshot: availability, stepSchedules: [], labVisitDates: [], warnings, errors };
+    const versionBase = { id: makeId("schedule"), planId, scheduleMode: "backward", kind: "backward", calculatedAt: nowIso(), timeZone: availability.timeZone || "Asia/Tokyo", availabilitySnapshot: availability, stepSchedules: [], warnings, errors };
     if (!plan) return { ...versionBase, feasible: false, errors: ["対象の実験計画が見つかりません。"] };
     const availabilityValidation = validateAvailability(availability); if (!availabilityValidation.valid) return { ...versionBase, feasible: false, errors: availabilityValidation.errors };
     const targetIso = /(?:Z|[+-]\d{2}:\d{2})$/.test(targetLocalValue || "") ? new Date(targetLocalValue).toISOString() : zonedLocalToIso(targetLocalValue, availability.timeZone);
@@ -376,7 +382,7 @@
         schedules.set(step.id, scheduleOneStepBackward(data, step, deadline));
       });
     } catch (error) { return { ...versionBase, feasible: false, errors: [error.message] }; }
-    versionBase.stepSchedules = steps.map((step) => schedules.get(step.id)); versionBase.labVisitDates = collectVisitDates(versionBase.stepSchedules, availability.timeZone);
+    versionBase.stepSchedules = steps.map((step) => schedules.get(step.id));
     const earliest = versionBase.stepSchedules.map((item) => item.startAt).sort()[0], referenceNow = options?.nowIso || nowIso();
     if (new Date(earliest) < new Date(referenceNow)) errors.push(`必要開始日時 ${formatZoned(earliest, availability.timeZone)} が現在より前のため、現時点からは完成予定日時に間に合いません。`);
     return { ...versionBase, feasible: errors.length === 0, errors: [...new Set(errors)], warnings: [...new Set(warnings)], requiredStartAt: earliest };
@@ -384,7 +390,7 @@
 
   function calculateForwardSchedule(data, planId, startValue, options) {
     const plan = data.plans.find((item) => item.id === planId), availability = deepClone(data.availability), errors = [], warnings = [], timeZone = availability.timeZone || "Asia/Tokyo";
-    const versionBase = { id: makeId("schedule"), planId, scheduleMode: "forward", kind: "forward", calculatedAt: nowIso(), timeZone, availabilitySnapshot: availability, experimentStartDateTime: null, targetCompletionDateTime: null, forecastCompletionAt: null, stepSchedules: [], labVisitDates: [], warnings, errors };
+    const versionBase = { id: makeId("schedule"), planId, scheduleMode: "forward", kind: "forward", calculatedAt: nowIso(), timeZone, availabilitySnapshot: availability, experimentStartDateTime: null, targetCompletionDateTime: null, forecastCompletionAt: null, stepSchedules: [], warnings, errors };
     if (!plan) return { ...versionBase, feasible: false, errors: ["対象の実験計画が見つかりません。"] };
     const validation = validateAvailability(availability); if (!validation.valid) return { ...versionBase, feasible: false, errors: validation.errors };
     const startAt = /(?:Z|[+-]\d{2}:\d{2})$/.test(startValue || "") ? new Date(startValue).toISOString() : zonedLocalToIso(startValue, timeZone); if (!startAt) return { ...versionBase, feasible: false, errors: ["実験開始予定日時が正しくありません。"] };
@@ -393,13 +399,13 @@
     const steps = orderedOwnerSteps(data.steps, "plan", planId); if (!steps.length) return { ...versionBase, feasible: false, errors: ["計算対象の工程がありません。"] };
     let cursor = startAt; try { versionBase.stepSchedules = steps.map((step) => { const schedule = scheduleOneStepForward(data, step, cursor, step.manualStartAt || null); cursor = schedule.endAt; return schedule; }); } catch (error) { return { ...versionBase, feasible: false, errors: [error.message] }; }
     const forecastCompletionAt = versionBase.stepSchedules.at(-1).endAt, late = !!targetAt && new Date(forecastCompletionAt) > new Date(targetAt), delayMinutes = late ? Math.ceil((new Date(forecastCompletionAt) - new Date(targetAt)) / 60000) : 0;
-    if (late) warnings.push("現在の進捗では完成希望日時に間に合わない可能性があります"); versionBase.labVisitDates = collectVisitDates(versionBase.stepSchedules, timeZone);
+    if (late) warnings.push("現在の進捗では完成希望日時に間に合わない可能性があります");
     return { ...versionBase, feasible: true, resolution: "feasible", forecastCompletionAt, late, delayMinutes, deadlineStatus: targetAt ? (late ? "late" : "onTime") : null };
   }
 
   function recalculatePlanProgress(data, planId, changedStepId, options) {
     const plan = data.plans.find((item) => item.id === planId), steps = orderedOwnerSteps(data.steps, "plan", planId), changedIndex = steps.findIndex((item) => item.id === changedStepId), scheduleMode = planScheduleMode(plan), hasDeadline = !!plan?.targetCompletionDateTime && !Number.isNaN(new Date(plan.targetCompletionDateTime).getTime()), errors = [], warnings = [];
-    const base = { id: makeId("schedule"), planId, scheduleMode, kind: "rolling", calculatedAt: nowIso(), timeZone: data.availability.timeZone, availabilitySnapshot: deepClone(data.availability), experimentStartDateTime: plan?.experimentStartDateTime || null, targetCompletionDateTime: hasDeadline ? plan.targetCompletionDateTime : null, previousScheduleVersionId: plan?.activeScheduleVersionId || null, changedStepId, affectedStepIds: [], stepSchedules: [], labVisitDates: [], warnings, errors };
+    const base = { id: makeId("schedule"), planId, scheduleMode, kind: "rolling", calculatedAt: nowIso(), timeZone: data.availability.timeZone, availabilitySnapshot: deepClone(data.availability), experimentStartDateTime: plan?.experimentStartDateTime || null, targetCompletionDateTime: hasDeadline ? plan.targetCompletionDateTime : null, previousScheduleVersionId: plan?.activeScheduleVersionId || null, changedStepId, affectedStepIds: [], stepSchedules: [], warnings, errors };
     if (!plan || changedIndex < 0) return { ...base, feasible: false, errors: ["対象の実験計画または工程が見つかりません。"] }; if (scheduleMode === "backward" && !hasDeadline) return { ...base, feasible: false, errors: ["完成希望日時が正しくありません。"] };
     const previous = data.scheduleVersions.find((item) => item.id === plan.activeScheduleVersionId), previousById = new Map((previous?.stepSchedules || []).map((item) => [item.stepId, item])), affected = steps.slice(changedIndex + 1).filter((step) => !progressFields(step).completed), affectedIds = new Set(affected.map((step) => step.id)); base.affectedStepIds = [...affectedIds];
     const fixed = steps.slice(0, changedIndex + 1), changed = steps[changedIndex], changedProgress = progressFields(changed); let cursor = changedProgress.actualEndDateTime || changedProgress.plannedEndDateTime || options?.nowIso || nowIso();
@@ -414,22 +420,26 @@
     } catch (error) { return { ...base, feasible: false, errors: [error.message] }; }
     const forecastCompletionAt = schedules.at(-1)?.endAt || cursor, delayMinutes = hasDeadline ? Math.max(0, Math.ceil((new Date(forecastCompletionAt) - new Date(plan.targetCompletionDateTime)) / 60000)) : 0, late = delayMinutes > 0;
     if (late) warnings.push("現在の進捗では完成希望日時に間に合わない可能性があります"); if (late && options?.rejectLate) return { ...base, feasible: false, late, forecastCompletionAt, delayMinutes, errors: ["指定した開始予定日時では完成希望日時に間に合いません。"] };
-    return { ...base, feasible: true, resolution: "feasible", stepSchedules: schedules, labVisitDates: collectVisitDates(schedules, data.availability.timeZone), requiredStartAt: schedules[0]?.startAt || null, forecastCompletionAt, delayMinutes, late, deadlineStatus: hasDeadline ? (late ? "late" : "onTime") : null, affectedStepNames: affected.map((step) => step.name) };
+    return { ...base, feasible: true, resolution: "feasible", stepSchedules: schedules, requiredStartAt: schedules[0]?.startAt || null, forecastCompletionAt, delayMinutes, late, deadlineStatus: hasDeadline ? (late ? "late" : "onTime") : null, affectedStepNames: affected.map((step) => step.name) };
   }
 
   function hydrateData(candidate) {
     const empty = createEmptyData();
     const sourceAvailability = candidate.availability || {}, defaults = defaultAvailability();
+    const legacyCannotVisitDates = (Array.isArray(candidate.attendancePreferences) ? candidate.attendancePreferences : []).filter((item) => item?.type === "cannotVisit").map((item) => ({ id: item.id || makeId("cannotVisit"), date: item.date, note: item.note || "" }));
+    const cannotVisitDates = Array.isArray(sourceAvailability.cannotVisitDates) ? sourceAvailability.cannotVisitDates : legacyCannotVisitDates;
     const availability = Array.isArray(sourceAvailability.profiles)
-      ? { ...defaults, ...sourceAvailability, profiles: sourceAvailability.profiles, holidays: sourceAvailability.holidays || [], exceptions: sourceAvailability.exceptions || [] }
-      : { ...defaults, profiles: [{ ...defaults.profiles[0], weekly: sourceAvailability.weekly?.length ? sourceAvailability.weekly : defaultWeekly() }], exceptions: sourceAvailability.exceptions || [], holidays: sourceAvailability.holidays || [] };
-    return { ...empty, ...candidate, experimentIdeas: Array.isArray(candidate.experimentIdeas) ? candidate.experimentIdeas : [], templates: Array.isArray(candidate.templates) ? candidate.templates : [], plans: Array.isArray(candidate.plans) ? candidate.plans : [], steps: Array.isArray(candidate.steps) ? candidate.steps : [], attendancePreferences: Array.isArray(candidate.attendancePreferences) ? candidate.attendancePreferences : [], scheduleVersions: Array.isArray(candidate.scheduleVersions) ? candidate.scheduleVersions : [], availability, updatedAt: candidate.updatedAt || empty.updatedAt };
+      ? { ...defaults, ...sourceAvailability, profiles: sourceAvailability.profiles, holidays: sourceAvailability.holidays || [], exceptions: sourceAvailability.exceptions || [], cannotVisitDates }
+      : { ...defaults, profiles: [{ ...defaults.profiles[0], weekly: sourceAvailability.weekly?.length ? sourceAvailability.weekly : defaultWeekly() }], exceptions: sourceAvailability.exceptions || [], holidays: sourceAvailability.holidays || [], cannotVisitDates };
+    return { ...empty, ...candidate, experimentIdeas: Array.isArray(candidate.experimentIdeas) ? candidate.experimentIdeas : [], templates: Array.isArray(candidate.templates) ? candidate.templates : [], plans: Array.isArray(candidate.plans) ? candidate.plans : [], steps: Array.isArray(candidate.steps) ? candidate.steps : [], scheduleVersions: Array.isArray(candidate.scheduleVersions) ? candidate.scheduleVersions : [], availability, updatedAt: candidate.updatedAt || empty.updatedAt };
   }
   function migrateData(candidate) {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return { valid: false, errors: ["JSONのルートはオブジェクトである必要があります。"] };
     if (candidate.schemaVersion === SCHEMA_VERSION) {
-      const validation = validateData(candidate);
-      return validation.valid ? { valid: true, data: deepClone(candidate), migrated: false, errors: [] } : { valid: false, errors: validation.errors };
+      const requiredArrays = ["experimentIdeas", "templates", "plans", "steps", "scheduleVersions"], invalidKey = requiredArrays.find((key) => !Array.isArray(candidate[key]));
+      if (invalidKey) return { valid: false, errors: [`${invalidKey} は配列である必要があります。`] };
+      const hydrated = hydrateData(deepClone(candidate)), validation = validateData(hydrated);
+      return validation.valid ? { valid: true, data: hydrated, migrated: false, errors: [] } : { valid: false, errors: validation.errors };
     }
     if (candidate.schemaVersion === 1 || candidate.schemaVersion === 2 || candidate.schemaVersion === 3) {
       const legacyArrayKeys = ["experimentIdeas", "templates", "plans", "steps", "equipment", "scheduleVersions"];
@@ -440,7 +450,7 @@
       migrated.templates = (candidate.templates || []).map((item) => ({ ...item, description: item.description || "" })); migrated.updatedAt = nowIso();
       migrated.plans = (candidate.plans || []).map((plan) => ({ ...plan, scheduleMode: planScheduleMode(plan), experimentStartDateTime: plan.experimentStartDateTime || null, forecastCompletionDateTime: plan.forecastCompletionDateTime || null, targetCompletionDateTime: plan.targetCompletionDateTime || (plan.targetCompletionDate ? zonedLocalToIso(`${plan.targetCompletionDate}T18:00`, migrated.availability.timeZone) : ""), activeScheduleVersionId: plan.activeScheduleVersionId || null }));
       migrated.steps = (candidate.steps || []).map((step) => { const progress = progressFields(step); return ({ ...step, workLocation: step.workLocation || "lab", interruptible: step.interruptible !== false, manualStartAt: step.manualStartAt || null, plannedStartAt: progress.plannedStartDateTime, plannedEndAt: progress.plannedEndDateTime, plannedStartDateTime: progress.plannedStartDateTime, plannedEndDateTime: progress.plannedEndDateTime, actualStartedAt: progress.actualStartDateTime, actualEndedAt: progress.actualEndDateTime, actualStartDateTime: progress.actualStartDateTime, actualEndDateTime: progress.actualEndDateTime, completed: progress.completed, actualSegments: step.actualSegments || [], remainingWorkMinutes: step.remainingWorkMinutes ?? step.workDurationMinutes, progressUpdatedAt: step.progressUpdatedAt || null }); });
-      migrated.attendancePreferences = candidate.attendancePreferences || [];
+      if (Array.isArray(candidate.attendancePreferences)) migrated.attendancePreferences = candidate.attendancePreferences;
       const validation = validateData(migrated);
       return validation.valid ? { valid: true, data: migrated, migrated: true, fromVersion: candidate.schemaVersion, errors: [] } : { valid: false, errors: validation.errors };
     }
@@ -450,9 +460,9 @@
     const errors = [];
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return { valid: false, errors: ["JSONのルートはオブジェクトである必要があります。"] };
     if (candidate.schemaVersion !== SCHEMA_VERSION) errors.push(`スキーマバージョン${SCHEMA_VERSION}ではありません。`);
-    const arrayKeys = ["experimentIdeas", "templates", "plans", "steps", "attendancePreferences", "scheduleVersions"];
+    const arrayKeys = ["experimentIdeas", "templates", "plans", "steps", "scheduleVersions"];
     arrayKeys.forEach((key) => { if (!Array.isArray(candidate[key])) errors.push(`${key} は配列である必要があります。`); });
-    const legacyArrayKeys = ["equipment", "workers", "optimizationRuns", "optimizationResults"]; legacyArrayKeys.forEach((key) => { if (candidate[key] !== undefined && !Array.isArray(candidate[key])) errors.push(`${key} は配列である必要があります。`); });
+    const legacyArrayKeys = ["attendancePreferences", "equipment", "workers", "optimizationRuns", "optimizationResults"]; legacyArrayKeys.forEach((key) => { if (candidate[key] !== undefined && !Array.isArray(candidate[key])) errors.push(`${key} は配列である必要があります。`); });
     const validIso = (value) => typeof value === "string" && value.trim() !== "" && Number.isFinite(new Date(value).getTime());
     const optionalIso = (value) => value === null || value === undefined || value === "" || validIso(value);
     const validPeriod = (period) => period && validIso(period.startAt) && validIso(period.endAt) && new Date(period.endAt) > new Date(period.startAt);
@@ -495,7 +505,7 @@
         steps.forEach((step) => { const result = validateStep(step, steps.filter((item) => item.id !== step.id), step.id); Object.values(result.errors).forEach((message) => errors.push(`工程「${step.name || step.id}」: ${message}`)); });
       });
     }
-    if (Array.isArray(candidate.scheduleVersions)) candidate.scheduleVersions.forEach((version, index) => { if (!planIds.has(version?.planId)) errors.push(`逆算結果 ${index + 1}: 実験計画が見つかりません。`); if (!validIso(version?.calculatedAt)) errors.push(`逆算結果 ${index + 1}: 計算日時が正しくありません。`); if (!optionalIso(version?.targetCompletionDateTime)) errors.push(`逆算結果 ${index + 1}: 完成予定日時が正しくありません。`); if (!Array.isArray(version?.stepSchedules) || !Array.isArray(version?.labVisitDates) || !Array.isArray(version?.warnings) || !Array.isArray(version?.errors)) errors.push(`逆算結果 ${index + 1}: 結果配列の形式が正しくありません。`); });
+    if (Array.isArray(candidate.scheduleVersions)) candidate.scheduleVersions.forEach((version, index) => { if (!planIds.has(version?.planId)) errors.push(`スケジュール結果 ${index + 1}: 実験計画が見つかりません。`); if (!validIso(version?.calculatedAt)) errors.push(`スケジュール結果 ${index + 1}: 計算日時が正しくありません。`); if (!optionalIso(version?.targetCompletionDateTime)) errors.push(`スケジュール結果 ${index + 1}: 完成予定日時が正しくありません。`); if (!Array.isArray(version?.stepSchedules) || !Array.isArray(version?.warnings) || !Array.isArray(version?.errors) || version?.labVisitDates !== undefined && !Array.isArray(version.labVisitDates)) errors.push(`スケジュール結果 ${index + 1}: 結果配列の形式が正しくありません。`); });
     return { valid: errors.length === 0, errors };
   }
   function serializeData(data) { return JSON.stringify({ ...data, schemaVersion: SCHEMA_VERSION, updatedAt: nowIso() }, null, 2); }
@@ -506,5 +516,5 @@
     return validation.valid ? { valid: true, data: migration.data, migrated: migration.migrated, errors: [] } : { valid: false, errors: validation.errors };
   }
 
-  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, SIMPLIFICATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, planScheduleMode, progressFields, assignProgressFields, splitWaitDurationMinutes, combineWaitDurationParts, validateIdea, sanitizeIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, orderedOwnerSteps, moveOwnerStepDisplayOrder, movePlanStepDisplayOrder, hasTemplateBeenApplied, appendTemplateToPlan, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, addWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, calculateForwardSchedule, recalculatePlanProgress, migrateData, validateData, hydrateData, serializeData, parseBackup };
+  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, SIMPLIFICATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, planScheduleMode, progressFields, assignProgressFields, nextWorkForPlan, splitWaitDurationMinutes, combineWaitDurationParts, validateIdea, sanitizeIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, orderedOwnerSteps, moveOwnerStepDisplayOrder, movePlanStepDisplayOrder, hasTemplateBeenApplied, appendTemplateToPlan, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, addWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, calculateForwardSchedule, recalculatePlanProgress, migrateData, validateData, hydrateData, serializeData, parseBackup };
 });
