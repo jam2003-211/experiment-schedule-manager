@@ -85,7 +85,37 @@
   }
   function sanitizeIdea(input, existing) {
     const now = nowIso();
-    return { id: existing?.id || makeId("idea"), name: normalizeText(input.name), purpose: normalizeText(input.purpose), materials: normalizeText(input.materials), priority: normalizeText(input.priority), desiredCompletionDate: normalizeText(input.desiredCompletionDate), notes: normalizeText(input.notes), status: normalizeText(input.status), createdAt: existing?.createdAt || now, updatedAt: now };
+    return { ...existing, id: existing?.id || makeId("idea"), name: normalizeText(input.name), purpose: normalizeText(input.purpose), materials: normalizeText(input.materials), priority: normalizeText(input.priority), desiredCompletionDate: normalizeText(input.desiredCompletionDate), notes: normalizeText(input.notes), status: normalizeText(input.status), createdAt: existing?.createdAt || now, updatedAt: now };
+  }
+
+  // Explicit allowlist: deadlines, progress, templates and schedule history belong to the plan.
+  function stockBasicFields(idea) {
+    const fields = {};
+    for (const key of ["name", "purpose", "materials", "priority", "notes", "plannedEquipment"]) {
+      if (Object.prototype.hasOwnProperty.call(idea, key)) fields[key] = idea[key];
+    }
+    fields.stockStatus = idea.status;
+    return fields;
+  }
+  function syncPlansFromIdea(data, experimentIdeaId) {
+    const idea = data.experimentIdeas.find((item) => item.id === experimentIdeaId);
+    if (!idea) return;
+    for (const plan of data.plans) {
+      if (plan.experimentIdeaId === idea.id) Object.assign(plan, stockBasicFields(idea), { updatedAt: idea.updatedAt });
+    }
+  }
+  function saveIdea(data, input, experimentIdeaId) {
+    const validation = validateIdea(input);
+    if (!validation.valid) throw new Error(Object.values(validation.errors)[0]);
+    const index = data.experimentIdeas.findIndex((item) => item.id === experimentIdeaId);
+    const idea = sanitizeIdea(input, index >= 0 ? data.experimentIdeas[index] : null);
+    if (index >= 0) data.experimentIdeas[index] = idea; else data.experimentIdeas.push(idea);
+    syncPlansFromIdea(data, idea.id);
+    return idea;
+  }
+  function deleteIdea(data, experimentIdeaId) {
+    // Retain the source ID and last saved basic information, including after JSON restore.
+    data.experimentIdeas = data.experimentIdeas.filter((item) => item.id !== experimentIdeaId);
   }
   function validateTemplate(input) {
     const errors = {}, name = normalizeText(input.name);
@@ -176,6 +206,7 @@
     const now = nowIso();
     const targetCompletionDate = idea.desiredCompletionDate || "";
     const applicationId = makeId("templateApplication"), plan = { id: makeId("plan"), experimentIdeaId, sourceTemplateId: templateId, name: `${idea.name} — ${template.name}`, scheduleMode: "backward", experimentStartDateTime: null, forecastCompletionDateTime: null, targetCompletionDate, targetCompletionDateTime: targetCompletionDate ? zonedLocalToIso(`${targetCompletionDate}T18:00`, data.availability?.timeZone || "Asia/Tokyo") : "", activeScheduleVersionId: null, status: "下書き", templateApplications: [], createdAt: now, updatedAt: now };
+    Object.assign(plan, stockBasicFields(idea));
     const dataWithPlan = { ...data, plans: [...data.plans, plan] }, steps = cloneTemplateStepsForPlan(dataWithPlan, templateId, plan.id, 0, applicationId);
     plan.templateApplications.push({ id: applicationId, templateId, templateName: template.name, appliedAt: now, stepIds: steps.map((step) => step.id) });
     return { plan, steps };
@@ -480,9 +511,9 @@
     const allIds = new Set();
     for (const key of [...arrayKeys, ...legacyArrayKeys]) if (Array.isArray(candidate[key])) candidate[key].forEach((item, index) => { if (!item || typeof item !== "object" || Array.isArray(item)) errors.push(`${key} ${index + 1}: オブジェクトである必要があります。`); else if (!item.id || typeof item.id !== "string") errors.push(`${key} ${index + 1}: IDがありません。`); else if (allIds.has(item.id)) errors.push(`${key} ${index + 1}: IDが重複しています。`); else allIds.add(item.id); });
     if (Array.isArray(candidate.templates)) candidate.templates.forEach((template, index) => { const result = validateTemplate(template || {}); Object.values(result.errors).forEach((message) => errors.push(`テンプレート ${index + 1}: ${message}`)); });
-    const ideaIds = new Set(Array.isArray(candidate.experimentIdeas) ? candidate.experimentIdeas.map((item) => item?.id).filter(Boolean) : []), templateIds = new Set(Array.isArray(candidate.templates) ? candidate.templates.map((item) => item?.id).filter(Boolean) : []), planIds = new Set(Array.isArray(candidate.plans) ? candidate.plans.map((item) => item?.id).filter(Boolean) : []), scheduleIds = new Set(Array.isArray(candidate.scheduleVersions) ? candidate.scheduleVersions.map((item) => item?.id).filter(Boolean) : []);
+    const templateIds = new Set(Array.isArray(candidate.templates) ? candidate.templates.map((item) => item?.id).filter(Boolean) : []), planIds = new Set(Array.isArray(candidate.plans) ? candidate.plans.map((item) => item?.id).filter(Boolean) : []), scheduleIds = new Set(Array.isArray(candidate.scheduleVersions) ? candidate.scheduleVersions.map((item) => item?.id).filter(Boolean) : []);
     if (Array.isArray(candidate.plans)) candidate.plans.forEach((plan, index) => {
-      if (!normalizeText(plan?.name)) errors.push(`実験計画 ${index + 1}: 計画名がありません。`); if (plan?.experimentIdeaId && !ideaIds.has(plan.experimentIdeaId)) errors.push(`実験計画 ${index + 1}: 参照する実験ストックが見つかりません。`); if (plan?.scheduleMode !== undefined && !["backward", "forward"].includes(plan.scheduleMode)) errors.push(`実験計画 ${index + 1}: スケジュール方式が正しくありません。`); if (!optionalIso(plan?.experimentStartDateTime)) errors.push(`実験計画 ${index + 1}: 実験開始予定日時が正しくありません。`); if (!optionalIso(plan?.forecastCompletionDateTime)) errors.push(`実験計画 ${index + 1}: 予想完成日時が正しくありません。`); if (!optionalIso(plan?.targetCompletionDateTime)) errors.push(`実験計画 ${index + 1}: 完成予定日時が正しくありません。`); if (plan?.activeScheduleVersionId && !scheduleIds.has(plan.activeScheduleVersionId)) errors.push(`実験計画 ${index + 1}: 有効なスケジュール結果が見つかりません。`);
+      if (!normalizeText(plan?.name)) errors.push(`実験計画 ${index + 1}: 計画名がありません。`); if (plan?.scheduleMode !== undefined && !["backward", "forward"].includes(plan.scheduleMode)) errors.push(`実験計画 ${index + 1}: スケジュール方式が正しくありません。`); if (!optionalIso(plan?.experimentStartDateTime)) errors.push(`実験計画 ${index + 1}: 実験開始予定日時が正しくありません。`); if (!optionalIso(plan?.forecastCompletionDateTime)) errors.push(`実験計画 ${index + 1}: 予想完成日時が正しくありません。`); if (!optionalIso(plan?.targetCompletionDateTime)) errors.push(`実験計画 ${index + 1}: 完成予定日時が正しくありません。`); if (plan?.activeScheduleVersionId && !scheduleIds.has(plan.activeScheduleVersionId)) errors.push(`実験計画 ${index + 1}: 有効なスケジュール結果が見つかりません。`);
       if (plan?.templateApplications !== undefined) {
         if (!Array.isArray(plan.templateApplications)) errors.push(`実験計画 ${index + 1}: テンプレート適用履歴は配列である必要があります。`);
         else { const applicationIds = new Set(); plan.templateApplications.forEach((application) => { if (!application || typeof application !== "object" || !normalizeText(application.id) || !normalizeText(application.templateId) || !normalizeText(application.templateName) || !validIso(application.appliedAt) || !Array.isArray(application.stepIds)) errors.push(`実験計画 ${index + 1}: テンプレート適用履歴が正しくありません。`); else if (applicationIds.has(application.id)) errors.push(`実験計画 ${index + 1}: テンプレート適用履歴IDが重複しています。`); else applicationIds.add(application.id); }); }
@@ -516,5 +547,5 @@
     return validation.valid ? { valid: true, data: migration.data, migrated: migration.migrated, errors: [] } : { valid: false, errors: validation.errors };
   }
 
-  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, SIMPLIFICATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, planScheduleMode, progressFields, assignProgressFields, nextWorkForPlan, splitWaitDurationMinutes, combineWaitDurationParts, validateIdea, sanitizeIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, orderedOwnerSteps, moveOwnerStepDisplayOrder, movePlanStepDisplayOrder, hasTemplateBeenApplied, appendTemplateToPlan, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, addWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, calculateForwardSchedule, recalculatePlanProgress, migrateData, validateData, hydrateData, serializeData, parseBackup };
+  return { SCHEMA_VERSION, STORAGE_KEY, MIGRATION_BACKUP_KEY, SIMPLIFICATION_BACKUP_KEY, migrationBackupKey, PRIORITIES, STATUSES, WAIT_TYPES, createEmptyData, defaultWeekly, defaultAvailability, makeId, planScheduleMode, progressFields, assignProgressFields, nextWorkForPlan, splitWaitDurationMinutes, combineWaitDurationParts, validateIdea, sanitizeIdea, saveIdea, syncPlansFromIdea, deleteIdea, validateTemplate, sanitizeTemplate, validateStep, sanitizeStep, orderedOwnerSteps, moveOwnerStepDisplayOrder, movePlanStepDisplayOrder, hasTemplateBeenApplied, appendTemplateToPlan, createPlanFromTemplate, validateAvailability, intervalForDate, isWorkingInstant, subtractWorkingMinutes, addWorkingMinutes, zonedLocalToIso, isoToZonedInput, formatZoned, dateKeyInZone, addDaysKey, calculatePlanSchedule, calculateForwardSchedule, recalculatePlanProgress, migrateData, validateData, hydrateData, serializeData, parseBackup };
 });

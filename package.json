@@ -3,6 +3,6 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "test": "node --test tests/core.test.js tests/simple-workflow.test.js"
+    "test": "node --test tests/core.test.js tests/simple-workflow.test.js tests/stock-sync.test.js"
   }
 }

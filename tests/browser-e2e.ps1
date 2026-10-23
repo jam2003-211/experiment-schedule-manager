@@ -1,9 +1,10 @@
+param([string]$AppUrl = '')
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $edgePath = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
 $profilePath = Join-Path $projectRoot '.e2e-profile'
-$appUrl = ([Uri](Join-Path $projectRoot 'index.html')).AbsoluteUri
+if (-not $AppUrl) { $AppUrl = ([Uri](Join-Path $projectRoot 'index.html')).AbsoluteUri }
 $debugPort = 9338
 $browser = $null
 $socket = $null
@@ -41,9 +42,9 @@ function Wait-For([scriptblock]$Condition, [int]$TimeoutSeconds = 10) {
 try {
   New-Item -ItemType Directory -Path $profilePath -Force | Out-Null
   $browser = Start-Process -FilePath $edgePath -ArgumentList @('--headless=new','--disable-gpu','--no-first-run','--disable-default-apps',"--remote-debugging-port=$debugPort","--user-data-dir=$profilePath",$appUrl) -PassThru -WindowStyle Hidden
-  $ready = Wait-For { $script:targets = Invoke-RestMethod "http://127.0.0.1:$debugPort/json/list"; [bool]($script:targets | Where-Object { $_.type -eq 'page' -and $_.url -like '*index.html*' }) }
+  $ready = Wait-For { $script:targets = Invoke-RestMethod "http://127.0.0.1:$debugPort/json/list"; [bool]($script:targets | Where-Object { $_.type -eq 'page' -and $_.url -eq $AppUrl }) }
   if (-not $ready) { throw 'Edge DevTools endpoint did not become ready.' }
-  $target = $script:targets | Where-Object { $_.type -eq 'page' -and $_.url -like '*index.html*' } | Select-Object -First 1
+  $target = $script:targets | Where-Object { $_.type -eq 'page' -and $_.url -eq $AppUrl } | Select-Object -First 1
   $webSocketUrl = $target.webSocketDebuggerUrl -replace 'localhost', '127.0.0.1'
   $socket = [Net.WebSockets.ClientWebSocket]::new(); $socket.ConnectAsync([Uri]$webSocketUrl, [Threading.CancellationToken]::None).GetAwaiter().GetResult(); [void](Invoke-Cdp 'Runtime.enable'); [void](Invoke-Cdp 'Page.enable')
 
@@ -168,6 +169,47 @@ try {
   Add-Result 'JSON backup restore compatibility' ($persistence.backup -and $persistence.mode -eq 'forward' -and $persistence.history -ge 3) 'Preserved simplified schedule data and history'
   Add-Result 'Required datetime labels' $persistence.labels 'Displays start planned, end planned, start, and end labels'
   Add-Result 'Legacy actual wording removed' (-not $persistence.legacyTerms) 'No legacy actual-start or actual-end wording remains'
+
+  [void](Invoke-Js @'
+(() => {const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),made=ExperimentCore.createPlanFromTemplate(d,d.templates[0].id,d.experimentIdeas[0].id);d.plans.push(made.plan);d.steps.push(...made.steps);localStorage.setItem(ExperimentCore.STORAGE_KEY,JSON.stringify(d));return true;})()
+'@)
+  [void](Invoke-Cdp 'Page.reload' @{ ignoreCache = $true }); if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Stock fixture reload timed out.' }
+  $stockSync = Invoke-Js @'
+(() => {
+  const C=ExperimentCore,read=()=>JSON.parse(localStorage.getItem(C.STORAGE_KEY)),before=read();
+  window.stockSyncBefore=before;
+  document.querySelector('[data-view="stock"]').click();document.querySelector('[data-id="idea"] .edit-button').click();
+  for(const [id,value] of Object.entries({name:'Updated stock',purpose:'Updated purpose',priority:'\u9ad8',notes:'Updated notes',materials:'Updated materials',status:'\u5b8c\u4e86',desiredCompletionDate:'2032-01-01'}))document.getElementById(id).value=value;
+  document.getElementById('ideaForm').requestSubmit();document.querySelector('[data-view="plans"]').click();
+  const d=read(),basic=['name','purpose','materials','priority','notes','stockStatus','updatedAt'],independent=p=>Object.fromEntries(Object.entries(p).filter(([k])=>!basic.includes(k))),related=d.plans.filter(p=>p.experimentIdeaId==='idea'),cards=related.map(p=>document.querySelector(`[data-owner-id="${p.id}"]`));
+  return {count:related.length,values:related.every(p=>p.name==='Updated stock'&&p.purpose==='Updated purpose'&&p.priority==='\u9ad8'&&p.notes==='Updated notes'&&p.materials==='Updated materials'&&p.stockStatus==='\u5b8c\u4e86'),steps:JSON.stringify(d.steps)===JSON.stringify(before.steps),plans:JSON.stringify(d.plans.map(independent))===JSON.stringify(before.plans.map(independent)),history:JSON.stringify(d.scheduleVersions)===JSON.stringify(before.scheduleVersions),ui:cards.length===2&&cards.every(c=>c.querySelector('h2').textContent==='Updated stock'&&c.querySelector('.plan-basic-info').textContent.includes('Updated notes')&&c.querySelector('.plan-basic-info').textContent.includes('Updated purpose'))};
+})()
+'@
+  Add-Result 'Stock save syncs all basic fields to multiple plans' ($stockSync.count -eq 2 -and $stockSync.values) 'Saved the stock through its form and updated both plans'
+  Add-Result 'Stock save preserves steps and display order' $stockSync.steps 'All step data, planned/actual times and completed states are unchanged'
+  Add-Result 'Stock save preserves independent plan schedules' ($stockSync.plans -and $stockSync.history) 'Preserved modes, deadlines, templates, forecasts and schedule history'
+  Add-Result 'Plan UI automatically shows saved basic fields' $stockSync.ui 'Both titles and basic information updated without a sync button'
+
+  [void](Invoke-Cdp 'Page.reload' @{ ignoreCache = $true }); if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Stock sync reload timed out.' }
+  $stockReload = Invoke-Js @'
+(() => {document.querySelector('[data-view="plans"]').click();const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),r=ExperimentCore.parseBackup(ExperimentCore.serializeData(d));return {persisted:d.plans.filter(p=>p.experimentIdeaId==='idea').length===2&&d.plans.filter(p=>p.experimentIdeaId==='idea').every(p=>p.name==='Updated stock'&&p.notes==='Updated notes'),ui:[...document.querySelectorAll('[data-owner-type="plan"] h2')].filter(h=>h.textContent==='Updated stock').length===2,backup:r.valid&&r.data.plans.filter(p=>p.experimentIdeaId==='idea').length===2};})()
+'@
+  Add-Result 'Stock sync survives browser reload' ($stockReload.persisted -and $stockReload.ui) 'Reloaded updated plan information from localStorage'
+  Add-Result 'Stock references survive JSON backup restore' $stockReload.backup 'Both plans retain their existing experimentIdeaId'
+  [void](Invoke-Js @'
+(() => {window.beforeStockDelete=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY));document.querySelector('[data-view="stock"]').click();document.querySelector('[data-id="idea"] .delete-button').click();document.querySelector('#confirmDialog [value="confirm"]').click();return true;})()
+'@)
+  if (-not (Wait-For { (Invoke-Js 'JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)).experimentIdeas.length') -eq 1 })) { throw 'Stock delete timed out.' }
+  $stockDelete = Invoke-Js @'
+(() => {const d=JSON.parse(localStorage.getItem(ExperimentCore.STORAGE_KEY)),before=window.beforeStockDelete,r=ExperimentCore.parseBackup(ExperimentCore.serializeData(d));return {retained:['plans','steps','scheduleVersions'].every(k=>JSON.stringify(d[k])===JSON.stringify(before[k])),backup:r.valid};})()
+'@
+  Add-Result 'Stock deletion keeps plans steps and schedule history' $stockDelete.retained 'Only the stock was removed'
+  Add-Result 'Deleted stock references allow JSON restore' $stockDelete.backup 'Missing source does not invalidate otherwise valid v4 data'
+  [void](Invoke-Cdp 'Page.reload' @{ ignoreCache = $true }); if (-not (Wait-For { (Invoke-Js 'document.readyState') -eq 'complete' })) { throw 'Deleted stock reload timed out.' }
+  $deletedReload = Invoke-Js @'
+(() => {document.querySelector('[data-view="plans"]').click();return document.querySelectorAll('[data-owner-type="plan"]').length===3&&[...document.querySelectorAll('[data-owner-type="plan"] h2')].filter(h=>h.textContent==='Updated stock').length===2;})()
+'@
+  Add-Result 'Deleted stock plans remain visible after reload' $deletedReload 'Both plans still display their last saved names'
 
   $invalid = Invoke-Js @'
 (() => {const before=localStorage.getItem(ExperimentCore.STORAGE_KEY),bad=JSON.parse(before);bad.steps='broken';const parsed=ExperimentCore.parseBackup(JSON.stringify(bad));return {rejected:!parsed.valid,unchanged:localStorage.getItem(ExperimentCore.STORAGE_KEY)===before};})()
